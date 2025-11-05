@@ -5,9 +5,9 @@ import { resolve } from 'path'
 export default defineConfig({
   plugins: [vue()],
   
-  // Build configuration to output to backend/static
+  // Build configuration
   build: {
-    outDir: '../backend/static',
+    outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       input: {
