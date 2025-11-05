@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.4] - 2025-11-05
+
+### Fixed
+- Frontend API calls now work correctly through Home Assistant Ingress
+- API base URL detection for iframe/Ingress environments
+- Settings and entities should now load properly
+
 ## [2.0.3] - 2025-11-05
 
 ### Fixed

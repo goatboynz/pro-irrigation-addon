@@ -1,7 +1,17 @@
 import axios from 'axios'
 
+// Get the base URL - in Ingress it will be relative to current path
+const getBaseURL = () => {
+  // If we're in an iframe (Ingress), use relative path
+  if (window.location !== window.parent.location) {
+    return './api'
+  }
+  // Otherwise use absolute path
+  return '/api'
+}
+
 const apiClient = axios.create({
-  baseURL: '/api',
+  baseURL: getBaseURL(),
   headers: {
     'Content-Type': 'application/json'
   },
