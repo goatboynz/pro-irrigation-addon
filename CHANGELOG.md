@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.3] - 2025-11-05
+
+### Fixed
+- Improved error handling for HA entities endpoint
+- Better error messages when SUPERVISOR_TOKEN is not available
+- Database initialization logging improvements
+
 ## [2.0.2] - 2025-11-05
 
 ### Fixed

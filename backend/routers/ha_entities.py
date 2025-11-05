@@ -34,6 +34,12 @@ async def get_entities():
     """
     ha_client = get_ha_client()
     
+    # Check if SUPERVISOR_TOKEN is available
+    if not ha_client.token:
+        print("WARNING: SUPERVISOR_TOKEN not available. Cannot fetch entities from Home Assistant.")
+        print("This is normal in development. In production, ensure the add-on has access to the supervisor API.")
+        return []
+    
     try:
         # Get all entities from Home Assistant
         entities_list = await ha_client.get_entities()
@@ -48,9 +54,12 @@ async def get_entities():
                 state=entity.state
             ))
         
+        print(f"Successfully retrieved {len(entities)} entities from Home Assistant")
         return entities
     
     except Exception as e:
         # If we can't get entities, return empty list
         print(f"Error getting entities from Home Assistant: {e}")
+        import traceback
+        traceback.print_exc()
         return []
