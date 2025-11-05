@@ -1,11 +1,17 @@
 import axios from 'axios'
 
-// Get the base URL - in Ingress it will be relative to current path
+// Get the base URL - handle Home Assistant Ingress paths
 const getBaseURL = () => {
-  // If we're in an iframe (Ingress), use relative path
-  if (window.location !== window.parent.location) {
-    return './api'
+  // Get the current path
+  const currentPath = window.location.pathname
+  
+  // If we're in Ingress (path contains /ingress), use relative path from current location
+  if (currentPath.includes('/ingress')) {
+    // Remove trailing slash if present
+    const basePath = currentPath.endsWith('/') ? currentPath.slice(0, -1) : currentPath
+    return `${basePath}/api`
   }
+  
   // Otherwise use absolute path
   return '/api'
 }
@@ -17,6 +23,8 @@ const apiClient = axios.create({
   },
   timeout: 10000
 })
+
+console.log('API Base URL:', getBaseURL())
 
 // Response interceptor for error handling
 apiClient.interceptors.response.use(

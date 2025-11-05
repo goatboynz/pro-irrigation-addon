@@ -19,7 +19,7 @@ RUN npm run build
 FROM python:3.11-slim
 
 # Set labels for Home Assistant add-on
-LABEL io.hass.version="2.0.4" \
+LABEL io.hass.version="2.0.5" \
       io.hass.type="addon" \
       io.hass.arch="aarch64|amd64|armv7"
 

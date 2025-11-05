@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.5] - 2025-11-05
+
+### Fixed
+- API base URL now correctly handles Ingress paths (e.g., /977de852_pro-irrigation-v2/ingress)
+- Added console logging to help debug API connection issues
+- Frontend should now successfully connect to backend API
+
 ## [2.0.4] - 2025-11-05
 
 ### Fixed
