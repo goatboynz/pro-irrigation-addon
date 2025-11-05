@@ -7,7 +7,7 @@ endpoints for request validation and response serialization.
 
 from datetime import datetime
 from typing import Optional, Literal
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 # ============================================================================
@@ -75,16 +75,9 @@ class ZoneCreate(BaseModel):
     # Zone status
     enabled: bool = Field(True, description="Whether the zone is enabled")
     
-    @validator('p1_duration_sec', 'p2_event_count', 'p2_duration_sec')
-    def validate_auto_fields(cls, v, values, field):
-        """Validate that auto mode fields are provided when mode is auto."""
-        if 'mode' in values and values['mode'] == 'auto':
-            if field.name in ['p1_duration_sec', 'p2_duration_sec'] and v is None:
-                raise ValueError(f"{field.name} is required for auto mode")
-        return v
-    
-    @validator('p1_manual_list', 'p2_manual_list')
-    def validate_manual_fields(cls, v, values, field):
+    @field_validator('p1_manual_list', 'p2_manual_list')
+    @classmethod
+    def validate_manual_fields(cls, v):
         """Validate manual schedule format."""
         if v is not None and v.strip():
             # Import here to avoid circular dependency
@@ -113,7 +106,8 @@ class ZoneUpdate(BaseModel):
     # Zone status
     enabled: Optional[bool] = Field(None, description="Whether the zone is enabled")
     
-    @validator('p1_manual_list', 'p2_manual_list')
+    @field_validator('p1_manual_list', 'p2_manual_list')
+    @classmethod
     def validate_manual_fields(cls, v):
         """Validate manual schedule format."""
         if v is not None and v.strip():
