@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2] - 2025-11-05
+
+### Fixed
+- Frontend: Set base path to './' for proper asset loading in Home Assistant Ingress
+- Backend: Add missing /api/ha/entities endpoint for entity discovery
+- Frontend now loads correctly in Home Assistant sidebar
+
 ## [2.0.1] - 2025-11-05
 
 ### Fixed

@@ -18,7 +18,7 @@ import os
 from backend.models.database import create_tables, engine
 from backend.models.v2_settings import SystemSettings
 from backend.models.database import SessionLocal
-from backend.routers import rooms, pumps, zones, water_events, sensors, settings, manual
+from backend.routers import rooms, pumps, zones, water_events, sensors, settings, manual, ha_entities
 from backend.services.scheduler import get_scheduler
 from backend.services.queue_processor import get_queue_processor
 
@@ -238,6 +238,7 @@ app.include_router(water_events.router)
 app.include_router(sensors.router)
 app.include_router(settings.router)
 app.include_router(manual.router)
+app.include_router(ha_entities.router)
 
 
 @app.get("/health", tags=["System"])
