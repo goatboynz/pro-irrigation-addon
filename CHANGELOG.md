@@ -145,5 +145,5 @@ This is the initial release. No upgrade path required.
 ## Support
 
 For issues or questions, please visit:
-- GitHub Issues: https://github.com/yourusername/pro-irrigation-addon/issues
+- GitHub Issues: https://github.com/goatboynz/pro-irrigation-addon/issues
 - Home Assistant Community: https://community.home-assistant.io/

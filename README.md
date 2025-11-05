@@ -27,7 +27,7 @@ The Pro-Irrigation Add-on replaces complex Node-RED flows and dozens of input he
 1. Navigate to **Settings** → **Add-ons** → **Add-on Store** in Home Assistant
 2. Click the three-dot menu (⋮) in the top right corner
 3. Select **Repositories**
-4. Add this repository URL: `https://github.com/yourusername/pro-irrigation-addon`
+4. Add this repository URL: `https://github.com/goatboynz/pro-irrigation-addon`
 5. Click **Add**
 6. Find "Pro-Irrigation" in the add-on store
 7. Click on it and select **Install**
@@ -423,7 +423,7 @@ http://homeassistant.local:8000/api/docs
 ## Support
 
 For issues, feature requests, or questions:
-- GitHub Issues: https://github.com/yourusername/pro-irrigation-addon/issues
+- GitHub Issues: https://github.com/goatboynz/pro-irrigation-addon/issues
 - Home Assistant Community: https://community.home-assistant.io/
 
 ## Contributing

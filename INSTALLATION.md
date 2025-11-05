@@ -44,7 +44,7 @@ Before installing, ensure you have:
    - Navigate to **Settings** → **Add-ons** → **Add-on Store**
    - Click the three-dot menu (⋮) in the top right
    - Select **Repositories**
-   - Add: `https://github.com/yourusername/pro-irrigation-addon`
+   - Add: `https://github.com/goatboynz/pro-irrigation-addon`
    - Click **Add**
 
 2. **Install the Add-on**:
@@ -444,5 +444,5 @@ If you encounter issues:
 ## Additional Resources
 
 - **API Documentation**: http://homeassistant.local:8000/api/docs
-- **GitHub Repository**: https://github.com/yourusername/pro-irrigation-addon
+- **GitHub Repository**: https://github.com/goatboynz/pro-irrigation-addon
 - **Home Assistant Community**: https://community.home-assistant.io/
