@@ -1,338 +1,281 @@
 """
-Pump API Endpoints
+Pumps API router for v2 room-based irrigation system.
 
-This module implements all REST API endpoints for pump management,
-including CRUD operations and real-time status monitoring.
+This module provides CRUD endpoints for managing pumps:
+- GET /api/rooms/{room_id}/pumps - List pumps for room
+- POST /api/rooms/{room_id}/pumps - Create pump
+- PUT /api/pumps/{id} - Update pump
+- DELETE /api/pumps/{id} - Delete pump (cascade)
 """
 
-import logging
-from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from typing import List, Optional
+from pydantic import BaseModel
 
-from ..models.database import get_db
-from ..models.pump import Pump
-from ..models.schemas import PumpCreate, PumpUpdate, PumpResponse, PumpBasic
+from backend.models.database import get_db
+from backend.models.v2_room import Room
+from backend.models.v2_pump import PumpV2
+from backend.models.v2_zone import ZoneV2
+from backend.schemas import (
+    PumpCreate,
+    PumpUpdate,
+    PumpResponse,
+    PumpDetailResponse
+)
+from backend.services.ha_client import get_ha_client
 
-logger = logging.getLogger(__name__)
-
-router = APIRouter(prefix="/api/pumps", tags=["Pumps"])
-
-# Global reference to queue processor (will be set by main application)
-_queue_processor = None
+router = APIRouter(prefix="/api", tags=["Pumps"])
 
 
-def set_queue_processor(processor):
+@router.get("/rooms/{room_id}/pumps", response_model=List[PumpResponse])
+def list_pumps_for_room(room_id: int, db: Session = Depends(get_db)):
     """
-    Set the global queue processor reference.
-    
-    This function should be called by the main application to provide
-    access to the queue processor for status checks.
+    List all pumps for a specific room.
     
     Args:
-        processor: QueueProcessor instance
-    """
-    global _queue_processor
-    _queue_processor = processor
-
-
-def get_queue_processor():
-    """
-    Get the queue processor instance.
-    
+        room_id: Room ID
+        db: Database session
+        
     Returns:
-        QueueProcessor instance or None if not initialized
-    """
-    return _queue_processor
-
-
-@router.get("", response_model=List[PumpResponse])
-async def list_pumps(db: Session = Depends(get_db)):
-    """
-    List all pumps with status information.
-    
-    Returns a list of all configured pumps including their current status
-    (idle, running, or queued), active zone name if running, and queue length.
-    
-    Args:
-        db: Database session (injected)
-    
-    Returns:
-        List[PumpResponse]: List of pumps with status
-    """
-    try:
-        pumps = db.query(Pump).all()
+        List[PumpResponse]: List of pumps in the room
         
-        # Get queue processor for status information
-        queue_processor = get_queue_processor()
-        
-        pump_responses = []
-        for pump in pumps:
-            # Get status from queue processor if available
-            if queue_processor:
-                status_info = queue_processor.get_pump_status(pump.id)
-            else:
-                # Default status if queue processor not available
-                status_info = {
-                    'status': 'idle',
-                    'active_zone': None,
-                    'queue_length': 0
-                }
-            
-            pump_response = PumpResponse(
-                id=pump.id,
-                name=pump.name,
-                lock_entity=pump.lock_entity,
-                status=status_info['status'],
-                active_zone=status_info['active_zone'],
-                queue_length=status_info['queue_length'],
-                created_at=pump.created_at,
-                updated_at=pump.updated_at
-            )
-            pump_responses.append(pump_response)
-        
-        logger.info(f"Listed {len(pump_responses)} pumps")
-        return pump_responses
-    
-    except Exception as e:
-        logger.error(f"Error listing pumps: {str(e)}")
+    Raises:
+        HTTPException: 404 if room not found
+    """
+    # Verify room exists
+    room = db.query(Room).filter(Room.id == room_id).first()
+    if not room:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list pumps: {str(e)}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Room with id {room_id} not found"
         )
-
-
-@router.post("", response_model=PumpBasic, status_code=status.HTTP_201_CREATED)
-async def create_pump(pump_data: PumpCreate, db: Session = Depends(get_db)):
-    """
-    Create a new pump.
     
-    Creates a new pump configuration with the specified name and lock entity.
-    The lock entity must be a valid Home Assistant entity ID.
+    # Get all pumps for the room
+    pumps = db.query(PumpV2).filter(PumpV2.room_id == room_id).all()
+    return pumps
+
+
+@router.post("/rooms/{room_id}/pumps", response_model=PumpResponse, status_code=status.HTTP_201_CREATED)
+def create_pump(room_id: int, pump_data: PumpCreate, db: Session = Depends(get_db)):
+    """
+    Create a new pump in a room.
     
     Args:
+        room_id: Room ID
         pump_data: Pump creation data
-        db: Database session (injected)
-    
+        db: Database session
+        
     Returns:
-        PumpBasic: Created pump information
-    
+        PumpResponse: Created pump
+        
     Raises:
-        HTTPException: If pump creation fails
+        HTTPException: 404 if room not found
+        HTTPException: 400 if pump name already exists in room
     """
-    try:
-        # Create new pump
-        new_pump = Pump(
-            name=pump_data.name,
-            lock_entity=pump_data.lock_entity
-        )
-        
-        db.add(new_pump)
-        db.commit()
-        db.refresh(new_pump)
-        
-        logger.info(f"Created pump: {new_pump.id} ({new_pump.name})")
-        return new_pump
-    
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating pump: {str(e)}")
+    # Verify room exists
+    room = db.query(Room).filter(Room.id == room_id).first()
+    if not room:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create pump: {str(e)}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Room with id {room_id} not found"
         )
-
-
-@router.get("/{pump_id}", response_model=PumpBasic)
-async def get_pump(pump_id: int, db: Session = Depends(get_db)):
-    """
-    Get pump details by ID.
     
-    Returns detailed information about a specific pump.
-    
-    Args:
-        pump_id: Pump ID
-        db: Database session (injected)
-    
-    Returns:
-        PumpBasic: Pump information
-    
-    Raises:
-        HTTPException: If pump not found
-    """
-    try:
-        pump = db.query(Pump).filter(Pump.id == pump_id).first()
-        
-        if not pump:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Pump with ID {pump_id} not found"
-            )
-        
-        logger.debug(f"Retrieved pump: {pump.id} ({pump.name})")
-        return pump
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving pump {pump_id}: {str(e)}")
+    # Check if pump with same name already exists in this room
+    existing_pump = db.query(PumpV2).filter(
+        PumpV2.room_id == room_id,
+        PumpV2.name == pump_data.name
+    ).first()
+    if existing_pump:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve pump: {str(e)}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Pump with name '{pump_data.name}' already exists in this room"
         )
-
-
-@router.put("/{pump_id}", response_model=PumpBasic)
-async def update_pump(
-    pump_id: int,
-    pump_data: PumpUpdate,
-    db: Session = Depends(get_db)
-):
-    """
-    Update pump configuration.
     
-    Updates the name and/or lock entity of an existing pump.
-    Only provided fields will be updated.
+    # Create new pump
+    new_pump = PumpV2(
+        room_id=room_id,
+        name=pump_data.name,
+        lock_entity=pump_data.lock_entity,
+        enabled=pump_data.enabled
+    )
+    
+    db.add(new_pump)
+    db.commit()
+    db.refresh(new_pump)
+    
+    return new_pump
+
+
+@router.put("/pumps/{pump_id}", response_model=PumpResponse)
+def update_pump(pump_id: int, pump_data: PumpUpdate, db: Session = Depends(get_db)):
+    """
+    Update an existing pump.
     
     Args:
         pump_id: Pump ID
         pump_data: Pump update data
-        db: Database session (injected)
-    
+        db: Database session
+        
     Returns:
-        PumpBasic: Updated pump information
-    
+        PumpResponse: Updated pump
+        
     Raises:
-        HTTPException: If pump not found or update fails
+        HTTPException: 404 if pump not found
+        HTTPException: 400 if new name conflicts with existing pump in same room
     """
-    try:
-        pump = db.query(Pump).filter(Pump.id == pump_id).first()
-        
-        if not pump:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Pump with ID {pump_id} not found"
-            )
-        
-        # Update fields if provided
-        if pump_data.name is not None:
-            pump.name = pump_data.name
-        
-        if pump_data.lock_entity is not None:
-            pump.lock_entity = pump_data.lock_entity
-        
-        db.commit()
-        db.refresh(pump)
-        
-        logger.info(f"Updated pump: {pump.id} ({pump.name})")
-        return pump
+    pump = db.query(PumpV2).filter(PumpV2.id == pump_id).first()
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating pump {pump_id}: {str(e)}")
+    if not pump:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update pump: {str(e)}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Pump with id {pump_id} not found"
         )
-
-
-@router.delete("/{pump_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_pump(pump_id: int, db: Session = Depends(get_db)):
-    """
-    Delete a pump.
     
-    Deletes a pump and all its associated zones (cascade delete).
-    This operation cannot be undone.
+    # Check if new name conflicts with existing pump in same room
+    if pump_data.name is not None and pump_data.name != pump.name:
+        existing_pump = db.query(PumpV2).filter(
+            PumpV2.room_id == pump.room_id,
+            PumpV2.name == pump_data.name
+        ).first()
+        if existing_pump:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Pump with name '{pump_data.name}' already exists in this room"
+            )
+    
+    # Update fields if provided
+    update_data = pump_data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(pump, field, value)
+    
+    db.commit()
+    db.refresh(pump)
+    
+    return pump
+
+
+@router.delete("/pumps/{pump_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_pump(pump_id: int, db: Session = Depends(get_db)):
+    """
+    Delete a pump and all related zones (cascade).
+    
+    This will delete:
+    - The pump itself
+    - All zones associated with this pump
     
     Args:
         pump_id: Pump ID
-        db: Database session (injected)
-    
+        db: Database session
+        
     Raises:
-        HTTPException: If pump not found or deletion fails
+        HTTPException: 404 if pump not found
     """
-    try:
-        pump = db.query(Pump).filter(Pump.id == pump_id).first()
-        
-        if not pump:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Pump with ID {pump_id} not found"
-            )
-        
-        pump_name = pump.name
-        db.delete(pump)
-        db.commit()
-        
-        logger.info(f"Deleted pump: {pump_id} ({pump_name})")
-        return None
+    pump = db.query(PumpV2).filter(PumpV2.id == pump_id).first()
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error deleting pump {pump_id}: {str(e)}")
+    if not pump:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete pump: {str(e)}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Pump with id {pump_id} not found"
         )
+    
+    db.delete(pump)
+    db.commit()
+    
+    return None
 
 
-@router.get("/{pump_id}/status", response_model=dict)
+# ============================================================================
+# Pump Status Endpoint
+# ============================================================================
+
+class ActiveZoneInfo(BaseModel):
+    """Schema for active zone information."""
+    zone_id: int
+    zone_name: str
+    switch_entity: str
+
+
+class PumpStatusResponse(BaseModel):
+    """Schema for pump status response."""
+    pump_id: int
+    pump_name: str
+    lock_entity: str
+    is_locked: bool
+    enabled: bool
+    active_zone: Optional[ActiveZoneInfo]
+    queue_length: int
+
+
+@router.get("/pumps/{pump_id}/status", response_model=PumpStatusResponse)
 async def get_pump_status(pump_id: int, db: Session = Depends(get_db)):
     """
-    Get real-time pump status.
+    Get current status of a pump including lock state, active zone, and queue length.
     
-    Returns the current status of a pump including whether it's idle,
-    running a zone, or has jobs queued. Also includes the active zone
-    name if running and the number of jobs in the queue.
+    This endpoint provides real-time status information:
+    - Lock state (queried from Home Assistant)
+    - Active zone (if pump is currently running)
+    - Queue length (number of pending jobs)
     
     Args:
         pump_id: Pump ID
-        db: Database session (injected)
-    
+        db: Database session
+        
     Returns:
-        dict: Pump status information with keys:
-            - status: 'idle', 'running', or 'queued'
-            - active_zone: Name of active zone if running, None otherwise
-            - queue_length: Number of jobs in queue
-    
+        PumpStatusResponse: Current pump status
+        
     Raises:
-        HTTPException: If pump not found
+        HTTPException: 404 if pump not found
     """
-    try:
-        # Verify pump exists
-        pump = db.query(Pump).filter(Pump.id == pump_id).first()
-        
-        if not pump:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Pump with ID {pump_id} not found"
-            )
-        
-        # Get status from queue processor
-        queue_processor = get_queue_processor()
-        
-        if queue_processor:
-            status_info = queue_processor.get_pump_status(pump_id)
-        else:
-            # Default status if queue processor not available
-            status_info = {
-                'status': 'idle',
-                'active_zone': None,
-                'queue_length': 0
-            }
-        
-        logger.debug(f"Retrieved status for pump {pump_id}: {status_info['status']}")
-        return status_info
+    # Get pump
+    pump = db.query(PumpV2).filter(PumpV2.id == pump_id).first()
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting status for pump {pump_id}: {str(e)}")
+    if not pump:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get pump status: {str(e)}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Pump with id {pump_id} not found"
         )
+    
+    # Get Home Assistant client
+    ha_client = get_ha_client()
+    
+    # Query lock state from Home Assistant
+    is_locked = False
+    try:
+        is_locked = await ha_client.is_entity_on(pump.lock_entity)
+    except Exception as e:
+        # If we can't get the state, default to False and log the error
+        print(f"Warning: Could not get lock state for {pump.lock_entity}: {e}")
+    
+    # Determine active zone by checking which zone switch is on
+    active_zone = None
+    if is_locked:
+        # Get all zones for this pump
+        zones = db.query(ZoneV2).filter(ZoneV2.pump_id == pump_id).all()
+        
+        # Check each zone's switch state
+        for zone in zones:
+            try:
+                if await ha_client.is_entity_on(zone.switch_entity):
+                    active_zone = ActiveZoneInfo(
+                        zone_id=zone.id,
+                        zone_name=zone.name,
+                        switch_entity=zone.switch_entity
+                    )
+                    break  # Only one zone should be active at a time
+            except Exception as e:
+                print(f"Warning: Could not get switch state for {zone.switch_entity}: {e}")
+    
+    # Queue length - placeholder until queue processor is implemented (task 11)
+    # For now, return 0 as the queue processor doesn't exist yet
+    queue_length = 0
+    
+    return PumpStatusResponse(
+        pump_id=pump.id,
+        pump_name=pump.name,
+        lock_entity=pump.lock_entity,
+        is_locked=is_locked,
+        enabled=pump.enabled,
+        active_zone=active_zone,
+        queue_length=queue_length
+    )

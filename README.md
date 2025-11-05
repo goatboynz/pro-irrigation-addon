@@ -1,443 +1,348 @@
-# Pro-Irrigation Add-on
+# Pro-Irrigation v2 - Room-Based System
 
-Professional irrigation management system for Home Assistant that provides centralized control of irrigation pumps and zones through an intuitive web interface.
+A complete redesign of the irrigation management system, now organized around grow rooms for simpler, more intuitive operation. Built as a Home Assistant add-on with a modern web interface.
 
-## Overview
+## What's New in v2
 
-The Pro-Irrigation Add-on replaces complex Node-RED flows and dozens of input helpers with a single, professional interface. Built around a "Pumps → Zones" hierarchy that matches your physical irrigation hardware, it provides intelligent scheduling with built-in safety mechanisms to prevent pump conflicts.
+- **Room-Based Organization**: Everything organized by grow rooms instead of individual zones
+- **Simplified Scheduling**: P1 and P2 events configured at the room level
+- **Manual Controls**: Easy manual pump/zone operation with custom durations
+- **Environmental Monitoring**: Track soil RH, EC, and more with historical graphs
+- **Better Timing**: Configurable pump startup and zone switch delays
+- **Queue Management**: Intelligent pump queue prevents conflicts and ensures sequential execution
+
+## Quick Start
+
+### Installation
+
+1. Add this repository to Home Assistant:
+   ```
+   https://github.com/goatboynz/pro-irrigation-addon
+   ```
+
+2. Install "Pro-Irrigation v2"
+
+3. Start the add-on
+
+4. Enable "Show in sidebar" to access from Home Assistant menu
+
+### First Steps
+
+1. **Create a Room**
+   - Name it (e.g., "Flower Room 1")
+   - Select lights-on entity (input_datetime or sensor)
+   - Select lights-off entity (input_datetime or sensor)
+   - Enable the room
+
+2. **Add a Pump**
+   - Name it (e.g., "Main Pump")
+   - Select lock entity (input_boolean that prevents simultaneous zone operation)
+
+3. **Add Zones**
+   - Name each zone (e.g., "Front Left", "Back Right")
+   - Select switch entity that controls the zone valve
+   - Zones are automatically associated with their pump
+
+4. **Configure Water Events**
+   - **P1 Events**: Primary watering after lights turn on
+     - Set delay in minutes (e.g., 30 minutes after lights on)
+     - Set run time in seconds (e.g., 82 for 1min 22sec)
+   - **P2 Events**: Secondary waterings at specific times
+     - Set time of day in HH:MM format (e.g., 14:00, 18:00)
+     - Set run time in seconds
+   - Assign events to specific zones (multi-select)
+
+5. **Add Sensors** (Optional)
+   - Soil moisture, EC, temperature, humidity, etc.
+   - View real-time values
+   - Historical graphs with configurable time ranges
 
 ## Features
 
-- **Pump Management**: Organize irrigation zones by physical pump hardware
-- **Intelligent Scheduling**: 
-  - Auto Mode: Automatically calculates irrigation times based on your lighting schedule
-  - Manual Mode: Specify exact irrigation times with precision control
-- **Queue Management**: Prevents multiple zones on the same pump from running simultaneously
-- **Home Assistant Integration**: 
-  - Embedded UI via Ingress (accessible from sidebar)
-  - Controls Home Assistant switch entities
-  - Discovers and uses existing input helpers
-- **Real-time Monitoring**: Live pump and zone status updates
-- **Persistent Configuration**: All settings stored in SQLite database
+### Room Management
+- Create multiple grow rooms with independent configurations
+- Each room has its own lights schedule
+- Centralized water event management per room
+- Enable/disable rooms without deleting configuration
 
-## Installation
+### Water Events
+- **P1 Events**: Primary watering triggered by lights-on event
+  - Configurable delay after lights turn on
+  - Ideal for first watering of the day
+- **P2 Events**: Secondary waterings at specific times
+  - Set exact time of day (HH:MM format)
+  - Perfect for mid-day or evening waterings
+- Run times in seconds for precise control
+- Assign events to multiple zones
+- Events automatically calculate next run time
 
-### Method 1: Add Repository to Home Assistant
+### Pump Queue System
+- Each pump maintains its own execution queue
+- Prevents multiple zones from running simultaneously on the same pump
+- First-in-first-out (FIFO) execution order
+- Automatic pump lock management
+- Configurable startup and shutdown delays
 
-1. Navigate to **Settings** → **Add-ons** → **Add-on Store** in Home Assistant
-2. Click the three-dot menu (⋮) in the top right corner
-3. Select **Repositories**
-4. Add this repository URL: `https://github.com/goatboynz/pro-irrigation-addon`
-5. Click **Add**
-6. Find "Pro-Irrigation" in the add-on store
-7. Click on it and select **Install**
-8. Wait for the installation to complete (this may take several minutes)
+### Manual Control
+- Run any zone manually with custom duration
+- Emergency stop functionality
+- Jobs added directly to pump queue
+- Bypasses scheduler for immediate execution
 
-### Method 2: Manual Installation
+### Environmental Monitoring
+- Add multiple sensors per room
+- Real-time value display
+- Historical graphs with time range selection:
+  - 1 hour
+  - 6 hours
+  - 24 hours
+  - 7 days
+- Support for various sensor types:
+  - Soil moisture (RH)
+  - Electrical conductivity (EC)
+  - Temperature
+  - Humidity
+  - Custom sensors
 
-1. Copy the add-on files to your Home Assistant add-ons directory:
-   ```
-   /addons/pro-irrigation/
-   ```
-2. Restart Home Assistant
-3. Navigate to **Settings** → **Add-ons** → **Add-on Store**
-4. Refresh the page
-5. Find "Pro-Irrigation" in the local add-ons section
-6. Click **Install**
+### System Settings
+- **Pump Startup Delay**: Time to wait after activating pump lock before turning on zone (default: 5 seconds)
+- **Zone Switch Delay**: Time to wait after turning off zone before deactivating pump lock (default: 2 seconds)
+- **Scheduler Interval**: How often the scheduler checks for events (default: 60 seconds)
+- **System Reset**: Delete all data and start fresh (preserves settings)
 
-### Starting the Add-on
+## Architecture
 
-1. After installation, click **Start**
-2. Enable **Start on boot** if you want the add-on to start automatically
-3. Enable **Watchdog** to automatically restart the add-on if it crashes
-4. Click **Show in sidebar** to add quick access to the Home Assistant menu
+### Hierarchical Structure
 
-## Configuration
-
-### Add-on Configuration
-
-The add-on can be configured through the Configuration tab:
-
-```yaml
-log_level: info
+```
+Rooms
+  ├── Pumps
+  │   └── Zones
+  ├── Water Events (P1/P2)
+  │   └── Assigned Zones
+  └── Environmental Sensors
 ```
 
-**Configuration Options:**
+### Component Overview
 
-- `log_level` (optional): Set logging verbosity
-  - `debug`: Detailed debugging information
-  - `info`: General informational messages (default)
-  - `warning`: Warning messages only
-  - `error`: Error messages only
+**Backend (Python/FastAPI)**
+- RESTful API for all operations
+- SQLite database for persistent storage
+- Scheduler engine (runs every 60 seconds)
+- Queue processor (runs every 1 second)
+- Home Assistant API integration
 
-### Prerequisites
+**Frontend (Vue.js)**
+- Modern single-page application
+- Real-time status updates
+- Responsive design for mobile and desktop
+- Integrated with Home Assistant Ingress
 
-Before using the add-on, ensure you have:
+**Background Services**
+- **Scheduler**: Evaluates all water events and creates execution jobs
+- **Queue Processor**: Manages pump queues and executes jobs sequentially
+- **HA Client**: Communicates with Home Assistant API for entity control and state
 
-1. **Switch Entities**: One switch entity for each irrigation zone (e.g., `switch.zone_1`, `switch.zone_2`)
-2. **Lock Entities**: One boolean input helper for each pump to act as a lock (e.g., `input_boolean.pump_1_lock`)
+### Execution Flow
 
-### Optional: Auto Mode Prerequisites
+1. **Scheduler** checks all enabled rooms and water events every 60 seconds
+2. When an event is due, **Scheduler** creates execution jobs for assigned zones
+3. Jobs are added to the appropriate **Pump Queue**
+4. **Queue Processor** checks each pump's queue every 1 second
+5. If pump is idle and queue has jobs, **Queue Processor** executes the first job:
+   - Turn on pump lock
+   - Wait for pump startup delay (5s)
+   - Turn on zone switch
+   - Wait for duration
+   - Turn off zone switch
+   - Wait for zone switch delay (2s)
+   - Turn off pump lock
+6. Process repeats for next job in queue
 
-If you plan to use Auto Mode scheduling, create these input helpers:
+## System Requirements
 
-1. **Lights On Time**: `input_datetime.lights_on` - When your lights turn on
-2. **Lights Off Time**: `input_datetime.lights_off` - When your lights turn off
-3. **P1 Start Delay**: `input_number.p1_start_delay` - Minutes after lights-on to start first irrigation
-4. **P2 Start Delay**: `input_number.p2_start_delay` - Minutes after lights-on to start P2 events
-5. **P2 End Buffer**: `input_number.p2_end_buffer` - Minutes before lights-off to stop P2 events
+### Home Assistant
+- Home Assistant OS or Supervised
+- Version 2023.1 or later recommended
 
-## Usage Guide
+### Required Entities
+- **Switch entities** for zone control (e.g., `switch.zone_1`)
+- **Input boolean entities** for pump locks (e.g., `input_boolean.pump_1_lock`)
 
-### Initial Setup
+### Optional Entities
+- **Input datetime entities** for lights schedule (e.g., `input_datetime.lights_on`)
+- **Sensor entities** for environmental monitoring (e.g., `sensor.soil_moisture`)
 
-#### 1. Configure Global Settings (Optional for Auto Mode)
+### Hardware
+- Raspberry Pi 3 or better (for Home Assistant)
+- Adequate storage for database and logs
 
-1. Click **Settings** in the navigation menu
-2. Select your input helpers from the dropdowns:
-   - Lights On Entity
-   - Lights Off Entity
-   - P1 Start Delay Entity
-   - P2 Start Delay Entity
-   - P2 End Buffer Entity
-3. Add any feed schedule notes in the text area
-4. Click **Save Settings**
+## API Documentation
 
-#### 2. Add Your First Pump
+The system provides a comprehensive REST API. Access the interactive API documentation at:
 
-1. From the **Pumps Dashboard**, click **Add New Pump**
-2. Enter a name for your pump (e.g., "Main Pump", "Greenhouse Pump")
-3. Select the lock entity for this pump (e.g., `input_boolean.pump_1_lock`)
-4. Click **Create**
+- **Swagger UI**: `http://your-homeassistant:8000/docs`
+- **ReDoc**: `http://your-homeassistant:8000/redoc`
 
-#### 3. Add Zones to Your Pump
+### Key API Endpoints
 
-1. Click **Manage** on the pump card
-2. Click **Add New Zone to this Pump**
-3. Fill in the zone details:
-   - **Name**: Descriptive name (e.g., "Tomatoes", "Lettuce Bed 1")
-   - **Switch Entity**: Select the switch that controls this zone
-   - **Mode**: Choose Auto or Manual
+**Rooms**
+- `GET /api/rooms` - List all rooms
+- `POST /api/rooms` - Create room
+- `GET /api/rooms/{id}` - Get room details
+- `PUT /api/rooms/{id}` - Update room
+- `DELETE /api/rooms/{id}` - Delete room
+- `GET /api/rooms/{id}/status` - Get room status
 
-**For Auto Mode:**
-- **P1 Duration**: How long (in seconds) the first irrigation runs
-- **P2 Event Count**: Number of additional irrigations throughout the day
-- **P2 Duration**: How long (in seconds) each P2 irrigation runs
+**Pumps**
+- `GET /api/rooms/{room_id}/pumps` - List pumps for room
+- `POST /api/rooms/{room_id}/pumps` - Create pump
+- `PUT /api/pumps/{id}` - Update pump
+- `DELETE /api/pumps/{id}` - Delete pump
+- `GET /api/pumps/{id}/status` - Get pump status
 
-**For Manual Mode:**
-- **P1 Events**: List of times in format `HH:MM.SS` (one per line)
-  - Example: `08:30.120` means 8:30 AM for 120 seconds
-- **P2 Events**: List of times in format `HH:MM.SS` (one per line)
+**Zones**
+- `GET /api/pumps/{pump_id}/zones` - List zones for pump
+- `POST /api/pumps/{pump_id}/zones` - Create zone
+- `PUT /api/zones/{id}` - Update zone
+- `DELETE /api/zones/{id}` - Delete zone
 
-4. Click **Save Zone**
+**Water Events**
+- `GET /api/rooms/{room_id}/events` - List events for room
+- `POST /api/rooms/{room_id}/events` - Create event
+- `PUT /api/events/{id}` - Update event
+- `DELETE /api/events/{id}` - Delete event
+- `POST /api/events/{id}/zones/{zone_id}` - Assign zone to event
+- `DELETE /api/events/{id}/zones/{zone_id}` - Remove zone from event
 
-### Understanding Scheduling Modes
+**Sensors**
+- `GET /api/rooms/{room_id}/sensors` - List sensors for room
+- `POST /api/rooms/{room_id}/sensors` - Create sensor
+- `PUT /api/sensors/{id}` - Update sensor
+- `DELETE /api/sensors/{id}` - Delete sensor
+- `GET /api/sensors/{id}/current` - Get current sensor value
+- `GET /api/sensors/{id}/history` - Get historical sensor data
 
-#### Auto Mode
+**Manual Control**
+- `POST /api/manual/run` - Run zone manually
+- `POST /api/manual/stop` - Emergency stop
 
-Auto Mode automatically calculates irrigation times based on your lighting schedule:
-
-- **P1 Event**: Runs once per day at `lights_on + p1_start_delay`
-- **P2 Events**: Distributed evenly between `lights_on + p2_start_delay` and `lights_off - p2_end_buffer`
-
-Example:
-- Lights on: 6:00 AM
-- Lights off: 10:00 PM
-- P1 delay: 30 minutes
-- P2 delay: 60 minutes
-- P2 buffer: 60 minutes
-- P2 count: 3
-
-Result:
-- P1: 6:30 AM
-- P2: 7:00 AM, 1:40 PM, 8:20 PM
-
-#### Manual Mode
-
-Manual Mode gives you precise control over irrigation times. Enter times in `HH:MM.SS` format where:
-- `HH`: Hour (00-23)
-- `MM`: Minute (00-59)
-- `SS`: Duration in seconds
-
-Example:
-```
-08:00.300
-12:30.180
-18:45.240
-```
-
-### Monitoring Your System
-
-#### Pump Status Indicators
-
-- **Idle**: Pump is not running, no zones queued
-- **Running**: Pump is actively irrigating a zone (zone name shown)
-- **Queued**: Pump has zones waiting to run
-
-#### Zone Information
-
-Each zone displays:
-- **Name**: Zone identifier
-- **Mode**: Auto or Manual badge
-- **Next Run**: When the zone will next execute
-- **Status**: Enabled or Disabled
-
-### Managing Your System
-
-#### Editing Zones
-
-1. Navigate to the Zone Manager for the pump
-2. Click the **Edit** button on the zone
-3. Modify settings as needed
-4. Click **Save Zone**
-
-#### Deleting Zones
-
-1. Navigate to the Zone Manager for the pump
-2. Click the **Delete** button on the zone
-3. Confirm the deletion
-
-#### Enabling/Disabling Zones
-
-1. Edit the zone
-2. Toggle the **Enabled** checkbox
-3. Save the zone
-
-Disabled zones will not execute but retain their configuration.
-
-#### Deleting Pumps
-
-1. From the Pumps Dashboard, click **Manage** on the pump
-2. Click **Delete Pump** (if available)
-3. Confirm the deletion
-
-Note: Deleting a pump will also delete all associated zones.
-
-## How It Works
-
-### Scheduler Engine
-
-The scheduler runs every 60 seconds and:
-1. Loads all enabled zones from the database
-2. Retrieves current global settings from Home Assistant
-3. Calculates scheduled times for each zone
-4. Creates execution jobs for zones that should run now
-5. Adds jobs to the appropriate pump queue
-
-### Queue Processor
-
-The queue processor runs every 1 second and:
-1. Checks each pump's lock status
-2. If a pump is idle and has queued jobs:
-   - Locks the pump
-   - Turns on the zone switch
-   - Waits for the specified duration
-   - Turns off the zone switch
-   - Unlocks the pump
-3. Processes the next job in the queue
-
-### Safety Mechanisms
-
-- **Pump Locks**: Prevent multiple zones on the same pump from running simultaneously
-- **Queue System**: Ensures zones run in the order they were scheduled
-- **Timeout Protection**: Automatically unlocks stuck pumps after 5 minutes
-- **Error Handling**: Continues operation even if individual zones fail
+**Settings**
+- `GET /api/settings` - Get system settings
+- `PUT /api/settings` - Update system settings
+- `POST /api/system/reset` - Reset all data
 
 ## Troubleshooting
 
-### Add-on Won't Start
-
-**Check the logs:**
-1. Go to the add-on page
-2. Click the **Log** tab
-3. Look for error messages
-
-**Common issues:**
-- Database corruption: Delete `/data/irrigation.db` and restart
-- Port conflict: Ensure port 8000 is not in use by another add-on
-
 ### Zones Not Running
 
-**Verify zone configuration:**
-1. Check that the zone is **Enabled**
-2. Verify the switch entity exists and is correct
-3. Check the next run time is in the future
+1. Check that the room is enabled
+2. Verify water events are configured correctly
+3. Check that zones are assigned to events
+4. Verify Home Assistant entities are accessible
+5. Check logs for scheduler errors
 
-**Check global settings (Auto Mode):**
-1. Ensure all required input helpers are configured
-2. Verify the input helper values are reasonable
-3. Check that lights-on time is before lights-off time
+### Pump Lock Issues
 
-**Check pump lock:**
-1. Verify the pump lock entity exists
-2. Manually check if the lock is stuck "on"
-3. Manually turn off the lock if needed
+1. Ensure pump lock entity exists in Home Assistant
+2. Verify entity is an `input_boolean`
+3. Check that lock entity is not stuck in "on" state
+4. Review queue processor logs
 
-### Switch Not Responding
+### Scheduler Not Triggering
 
-**Verify Home Assistant connection:**
-1. Check that Home Assistant is running
-2. Verify the switch entity exists in Home Assistant
-3. Test the switch manually in Home Assistant
+1. Verify lights-on/lights-off entities are correct
+2. Check that current time matches event schedule
+3. Ensure scheduler interval is set correctly (default: 60s)
+4. Review scheduler logs for calculation errors
 
-**Check entity permissions:**
-- Ensure the add-on has permission to control switches
+### Frontend Not Loading
 
-### Incorrect Schedule Times
+1. Verify add-on is running
+2. Check that Ingress is enabled
+3. Clear browser cache
+4. Check add-on logs for errors
 
-**For Auto Mode:**
-1. Verify global settings are configured correctly
-2. Check input helper values in Home Assistant
-3. Review the calculation logic in the design document
+### Entity Not Found
 
-**For Manual Mode:**
-1. Verify time format is correct: `HH:MM.SS`
-2. Check for typos in the event list
-3. Ensure times are in 24-hour format
-
-### Database Issues
-
-**Reset the database:**
-1. Stop the add-on
-2. Access the add-on's file system or use SSH
-3. Delete `/data/irrigation.db`
-4. Restart the add-on
-5. Reconfigure your pumps and zones
-
-**Backup the database:**
-- The database is located at `/data/irrigation.db`
-- Copy this file to back up your configuration
-
-### UI Not Loading
-
-**Clear browser cache:**
-1. Hard refresh the page (Ctrl+Shift+R or Cmd+Shift+R)
-2. Clear browser cache for Home Assistant
-3. Try a different browser
-
-**Check Ingress:**
-1. Verify Ingress is enabled in config.yaml
-2. Restart the add-on
-3. Check Home Assistant logs for Ingress errors
-
-### Performance Issues
-
-**Reduce polling frequency:**
-- The system polls every 5 seconds by default
-- This is configurable in the frontend code if needed
-
-**Optimize zone count:**
-- The system is tested with up to 100 zones
-- Consider splitting very large systems across multiple instances
-
-## Advanced Configuration
-
-### Environment Variables
-
-The following environment variables can be set in the Dockerfile or run.sh:
-
-- `LOG_LEVEL`: Override the log level (debug, info, warning, error)
-- `WORKERS`: Number of uvicorn workers (default: 1, do not change)
-- `DATABASE_PATH`: Path to SQLite database (default: /data/irrigation.db)
-
-### Database Schema
-
-The database uses SQLite with three main tables:
-- `pumps`: Pump configurations
-- `zones`: Zone configurations and schedules
-- `global_settings`: System-wide settings
-
-Direct database access is not recommended but can be done via SQLite tools.
+1. Ensure entity exists in Home Assistant
+2. Verify entity ID is spelled correctly
+3. Check that entity is not disabled
+4. Restart Home Assistant if entity was recently created
 
 ## Development
 
 ### Project Structure
 
 ```
-pro-irrigation-addon/
-├── backend/              # Python FastAPI backend
-│   ├── main.py          # Application entry point
-│   ├── models/          # Database models and schemas
-│   ├── services/        # Business logic services
-│   ├── routers/         # API route handlers
-│   └── tests/           # Backend tests
-├── frontend/            # Vue.js frontend application
+.
+├── backend/
+│   ├── main.py                 # FastAPI application
+│   ├── models/                 # Database models
+│   ├── routers/                # API endpoints
+│   ├── services/               # Background services
+│   └── schemas.py              # Pydantic schemas
+├── frontend/
 │   ├── src/
-│   │   ├── components/  # Vue components
-│   │   ├── views/       # Page views
-│   │   ├── services/    # API client
-│   │   ├── stores/      # Pinia state management
-│   │   └── router/      # Vue Router configuration
+│   │   ├── components/         # Vue components
+│   │   ├── views/              # Page views
+│   │   └── services/           # API client
 │   └── package.json
-├── data/                # Persistent data directory
-├── config.yaml          # Home Assistant add-on configuration
-├── Dockerfile           # Multi-stage Docker build
-└── run.sh              # Startup script
+├── data/                       # Database storage
+├── Dockerfile                  # Container build
+└── config.yaml                 # HA add-on config
 ```
 
-### Backend Development
+### Building Locally
 
 ```bash
-cd backend
-pip install -r requirements.txt
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# Build Docker image
+docker build -t pro-irrigation:dev .
+
+# Run locally
+docker run -p 8000:8000 \
+  -v $(pwd)/data:/data \
+  -e SUPERVISOR_TOKEN=your_token \
+  pro-irrigation:dev
 ```
-
-### Frontend Development
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The frontend dev server will proxy API requests to the backend.
 
 ### Running Tests
 
-**Backend tests:**
 ```bash
+# Backend tests
 cd backend
 pytest
-```
 
-**Frontend tests:**
-```bash
+# Frontend tests
 cd frontend
-npm run test
-```
-
-### Building the Add-on
-
-```bash
-docker build -t pro-irrigation:latest .
-```
-
-## API Documentation
-
-The REST API is documented at `/api/docs` when the add-on is running. Access it at:
-```
-http://homeassistant.local:8000/api/docs
+npm test
 ```
 
 ## Support
 
-For issues, feature requests, or questions:
-- GitHub Issues: https://github.com/goatboynz/pro-irrigation-addon/issues
-- Home Assistant Community: https://community.home-assistant.io/
+- **GitHub**: https://github.com/goatboynz/pro-irrigation-addon
+- **Issues**: https://github.com/goatboynz/pro-irrigation-addon/issues
+- **Discussions**: https://github.com/goatboynz/pro-irrigation-addon/discussions
 
-## Contributing
+## Version History
 
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+### 2.0.0 (Current)
+- Complete redesign with room-based architecture
+- New Vue.js frontend
+- FastAPI backend
+- Scheduler and queue processor
+- Environmental monitoring
+- Manual control interface
+
+### 1.0.0 (Deprecated)
+- Original zone-based system
+- Node-RED flows
+- Basic scheduling
 
 ## License
 
 MIT License - See LICENSE file for details
 
-## Acknowledgments
+## Credits
 
-Built for the Home Assistant community with ❤️
+Developed for Home Assistant community by goatboynz

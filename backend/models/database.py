@@ -1,40 +1,46 @@
-"""Database configuration and session management."""
+"""
+Database configuration and session management for v2 room-based irrigation system.
 
-import os
-from sqlalchemy import create_engine, event
+This module provides:
+- SQLAlchemy Base for model definitions
+- Database engine configuration
+- Session factory
+- Dependency injection for FastAPI
+"""
+
+from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.engine import Engine
+from typing import Generator
 
-# Database path - use /data directory for Home Assistant add-on persistence
-DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/irrigation.db")
-DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
+# Database configuration
+DATABASE_URL = "sqlite:////data/irrigation_v2.db"
 
 # Create SQLAlchemy engine
+# connect_args={"check_same_thread": False} is needed for SQLite
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},  # Needed for SQLite
-    echo=False,  # Set to True for SQL query logging
+    connect_args={"check_same_thread": False},
+    echo=False  # Set to True for SQL query logging during development
 )
 
-# Enable foreign key constraints for SQLite
-@event.listens_for(Engine, "connect")
-def set_sqlite_pragma(dbapi_conn, connection_record):
-    """Enable foreign key constraints in SQLite."""
-    cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
-
-# Create session factory
+# Create SessionLocal class for database sessions
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Create declarative base for models
+# Create Base class for model definitions
 Base = declarative_base()
 
 
-def get_db() -> Session:
+def get_db() -> Generator[Session, None, None]:
     """
-    Dependency function to get database session.
+    Dependency injection function for FastAPI routes.
+    
+    Yields a database session and ensures it's closed after use.
+    
+    Usage in FastAPI:
+        @app.get("/items")
+        def read_items(db: Session = Depends(get_db)):
+            return db.query(Item).all()
     
     Yields:
         Session: SQLAlchemy database session
@@ -46,34 +52,11 @@ def get_db() -> Session:
         db.close()
 
 
-def init_db() -> None:
+def create_tables():
     """
-    Initialize database by creating all tables.
+    Create all database tables defined in models.
     
-    This function should be called on application startup.
-    It will create all tables defined in the models if they don't exist.
+    This function should be called on application startup to ensure
+    all tables exist before the application starts handling requests.
     """
-    # Import all models to ensure they are registered with Base
-    from .pump import Pump
-    from .zone import Zone
-    from .global_settings import GlobalSettings
-    
-    # Create all tables
     Base.metadata.create_all(bind=engine)
-
-
-def check_db_health() -> bool:
-    """
-    Check database health by attempting a simple query.
-    
-    Returns:
-        bool: True if database is healthy, False otherwise
-    """
-    try:
-        db = SessionLocal()
-        # Execute a simple query to check connection
-        db.execute("SELECT 1")
-        db.close()
-        return True
-    except Exception:
-        return False

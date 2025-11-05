@@ -1,34 +1,26 @@
 """
-Home Assistant API Client
+Home Assistant API client for irrigation system.
 
-This module provides a client for interacting with the Home Assistant API
-through the supervisor proxy. It handles entity discovery, state retrieval,
-and service calls with built-in error handling and retry logic.
+This module provides integration with Home Assistant's REST API for:
+- Entity discovery (switches, input_datetime, input_boolean, sensors)
+- Entity state reading
+- Service calls (switch control, lock control)
+
+Uses SUPERVISOR_TOKEN from environment for authentication.
 """
 
-import asyncio
-import logging
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-
+import os
 import aiohttp
-
+from typing import List, Dict, Optional, Any
+from dataclasses import dataclass
+import logging
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class Entity:
-    """Represents a Home Assistant entity"""
-    entity_id: str
-    friendly_name: str
-    state: str
-    attributes: Dict[str, Any]
-
-
-@dataclass
-class EntityState:
-    """Represents the current state of an entity"""
+    """Represents a Home Assistant entity."""
     entity_id: str
     state: str
     attributes: Dict[str, Any]
@@ -36,239 +28,402 @@ class EntityState:
     last_updated: str
 
 
-class HomeAssistantAPIError(Exception):
-    """Raised when Home Assistant API calls fail"""
-    pass
+@dataclass
+class EntityState:
+    """Represents the current state of an entity."""
+    entity_id: str
+    state: str
+    attributes: Dict[str, Any]
 
 
 class HomeAssistantClient:
     """
-    Client for interacting with Home Assistant API through the supervisor.
+    Client for interacting with Home Assistant API.
     
-    This client provides methods for entity discovery, state retrieval,
-    and service calls with automatic retry logic for transient failures.
+    This client uses the supervisor API endpoint which is available
+    within Home Assistant add-ons. Authentication is handled via
+    the SUPERVISOR_TOKEN environment variable.
     """
     
-    def __init__(self, supervisor_token: str, base_url: str = "http://supervisor/core/api"):
+    def __init__(self, base_url: str = "http://supervisor/core/api", token: Optional[str] = None):
         """
         Initialize the Home Assistant client.
         
         Args:
-            supervisor_token: The supervisor token for authentication
-            base_url: The base URL for the Home Assistant API (default: supervisor proxy)
+            base_url: Base URL for Home Assistant API (default: supervisor endpoint)
+            token: Authentication token (default: from SUPERVISOR_TOKEN env var)
         """
-        self.base_url = base_url.rstrip('/')
-        self.token = supervisor_token
+        self.base_url = base_url
+        self.token = token or os.getenv("SUPERVISOR_TOKEN")
+        
+        if not self.token:
+            logger.warning("SUPERVISOR_TOKEN not found in environment. HA API calls may fail.")
+        
         self.headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json"
         }
-        self._session: Optional[aiohttp.ClientSession] = None
-        self.max_retries = 3
-        self.retry_delay = 1.0  # seconds
-    
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create an aiohttp session"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(headers=self.headers)
-        return self._session
-    
-    async def close(self):
-        """Close the aiohttp session"""
-        if self._session and not self._session.closed:
-            await self._session.close()
-    
-    async def _make_request(
-        self,
-        method: str,
-        endpoint: str,
-        json_data: Optional[Dict[str, Any]] = None,
-        retry_count: int = 0
-    ) -> Any:
-        """
-        Make an HTTP request to the Home Assistant API with retry logic.
-        
-        Args:
-            method: HTTP method (GET, POST, etc.)
-            endpoint: API endpoint path
-            json_data: Optional JSON data for POST requests
-            retry_count: Current retry attempt number
-            
-        Returns:
-            JSON response from the API
-            
-        Raises:
-            HomeAssistantAPIError: If the request fails after all retries
-        """
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        session = await self._get_session()
-        
-        try:
-            async with session.request(method, url, json=json_data) as response:
-                if response.status == 200 or response.status == 201:
-                    return await response.json()
-                elif response.status == 404:
-                    logger.warning(f"Resource not found: {url}")
-                    raise HomeAssistantAPIError(f"Resource not found: {endpoint}")
-                else:
-                    error_text = await response.text()
-                    logger.error(f"API request failed: {response.status} - {error_text}")
-                    raise HomeAssistantAPIError(
-                        f"API request failed with status {response.status}: {error_text}"
-                    )
-        
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            if retry_count < self.max_retries:
-                delay = self.retry_delay * (2 ** retry_count)  # Exponential backoff
-                logger.warning(
-                    f"Request to {url} failed (attempt {retry_count + 1}/{self.max_retries}), "
-                    f"retrying in {delay}s: {str(e)}"
-                )
-                await asyncio.sleep(delay)
-                return await self._make_request(method, endpoint, json_data, retry_count + 1)
-            else:
-                logger.error(f"Request to {url} failed after {self.max_retries} retries: {str(e)}")
-                raise HomeAssistantAPIError(
-                    f"Failed to connect to Home Assistant after {self.max_retries} retries: {str(e)}"
-                )
     
     async def get_entities(self, entity_type: Optional[str] = None) -> List[Entity]:
         """
-        Discover entities from Home Assistant, optionally filtered by type.
+        Discover entities from Home Assistant.
         
         Args:
-            entity_type: Optional entity type filter (e.g., 'switch', 'input_datetime',
-                        'input_number', 'input_boolean')
+            entity_type: Filter by entity domain (e.g., 'switch', 'input_datetime', 'sensor')
+                        If None, returns all entities.
         
         Returns:
-            List of Entity objects
-            
-        Raises:
-            HomeAssistantAPIError: If the API call fails
-        """
-        try:
-            response = await self._make_request("GET", "/states")
-            
-            entities = []
-            for state_data in response:
-                entity_id = state_data.get("entity_id", "")
-                
-                # Filter by entity type if specified
-                if entity_type:
-                    if not entity_id.startswith(f"{entity_type}."):
-                        continue
-                
-                attributes = state_data.get("attributes", {})
-                entity = Entity(
-                    entity_id=entity_id,
-                    friendly_name=attributes.get("friendly_name", entity_id),
-                    state=state_data.get("state", "unknown"),
-                    attributes=attributes
-                )
-                entities.append(entity)
-            
-            logger.debug(f"Discovered {len(entities)} entities" + 
-                        (f" of type '{entity_type}'" if entity_type else ""))
-            return entities
+            List of Entity objects matching the filter
         
-        except HomeAssistantAPIError:
+        Raises:
+            aiohttp.ClientError: If the API request fails
+        """
+        url = f"{self.base_url}/states"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers) as response:
+                    response.raise_for_status()
+                    states = await response.json()
+                    
+                    entities = []
+                    for state_data in states:
+                        entity_id = state_data.get("entity_id", "")
+                        
+                        # Filter by entity type if specified
+                        if entity_type:
+                            domain = entity_id.split(".")[0] if "." in entity_id else ""
+                            if domain != entity_type:
+                                continue
+                        
+                        entity = Entity(
+                            entity_id=entity_id,
+                            state=state_data.get("state", ""),
+                            attributes=state_data.get("attributes", {}),
+                            last_changed=state_data.get("last_changed", ""),
+                            last_updated=state_data.get("last_updated", "")
+                        )
+                        entities.append(entity)
+                    
+                    logger.info(f"Retrieved {len(entities)} entities" + 
+                              (f" of type '{entity_type}'" if entity_type else ""))
+                    return entities
+                    
+        except aiohttp.ClientError as e:
+            logger.error(f"Failed to get entities from Home Assistant: {e}")
             raise
         except Exception as e:
-            logger.error(f"Error parsing entities response: {str(e)}")
-            raise HomeAssistantAPIError(f"Failed to parse entities: {str(e)}")
+            logger.error(f"Unexpected error getting entities: {e}")
+            raise
     
     async def get_state(self, entity_id: str) -> EntityState:
         """
-        Retrieve the current state of a specific entity.
+        Get the current state of a specific entity.
         
         Args:
-            entity_id: The entity ID (e.g., 'switch.irrigation_zone_1')
+            entity_id: The entity ID to query (e.g., 'switch.irrigation_zone_1')
         
         Returns:
-            EntityState object with current state information
-            
-        Raises:
-            HomeAssistantAPIError: If the entity doesn't exist or API call fails
-        """
-        try:
-            response = await self._make_request("GET", f"/states/{entity_id}")
-            
-            state = EntityState(
-                entity_id=response.get("entity_id", entity_id),
-                state=response.get("state", "unknown"),
-                attributes=response.get("attributes", {}),
-                last_changed=response.get("last_changed", ""),
-                last_updated=response.get("last_updated", "")
-            )
-            
-            logger.debug(f"Retrieved state for {entity_id}: {state.state}")
-            return state
+            EntityState object with current state and attributes
         
-        except HomeAssistantAPIError:
+        Raises:
+            aiohttp.ClientError: If the API request fails
+            ValueError: If the entity is not found
+        """
+        url = f"{self.base_url}/states/{entity_id}"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers) as response:
+                    if response.status == 404:
+                        raise ValueError(f"Entity '{entity_id}' not found in Home Assistant")
+                    
+                    response.raise_for_status()
+                    state_data = await response.json()
+                    
+                    entity_state = EntityState(
+                        entity_id=state_data.get("entity_id", entity_id),
+                        state=state_data.get("state", ""),
+                        attributes=state_data.get("attributes", {})
+                    )
+                    
+                    logger.debug(f"Retrieved state for {entity_id}: {entity_state.state}")
+                    return entity_state
+                    
+        except aiohttp.ClientError as e:
+            logger.error(f"Failed to get state for {entity_id}: {e}")
+            raise
+        except ValueError:
             raise
         except Exception as e:
-            logger.error(f"Error parsing state response for {entity_id}: {str(e)}")
-            raise HomeAssistantAPIError(f"Failed to parse state for {entity_id}: {str(e)}")
+            logger.error(f"Unexpected error getting state for {entity_id}: {e}")
+            raise
     
-    async def call_service(
-        self,
-        domain: str,
-        service: str,
-        entity_id: Optional[str] = None,
-        service_data: Optional[Dict[str, Any]] = None
-    ) -> None:
+    async def call_service(self, domain: str, service: str, entity_id: str, 
+                          service_data: Optional[Dict[str, Any]] = None) -> None:
         """
         Call a Home Assistant service.
         
         Args:
             domain: Service domain (e.g., 'switch', 'input_boolean')
             service: Service name (e.g., 'turn_on', 'turn_off')
-            entity_id: Optional entity ID to target
+            entity_id: Target entity ID
             service_data: Optional additional service data
-            
-        Raises:
-            HomeAssistantAPIError: If the service call fails
-        """
-        data = service_data.copy() if service_data else {}
         
-        if entity_id:
-            data["entity_id"] = entity_id
+        Raises:
+            aiohttp.ClientError: If the API request fails
+        """
+        url = f"{self.base_url}/services/{domain}/{service}"
+        
+        payload = {
+            "entity_id": entity_id
+        }
+        
+        if service_data:
+            payload.update(service_data)
         
         try:
-            await self._make_request("POST", f"/services/{domain}/{service}", json_data=data)
-            logger.debug(f"Called service {domain}.{service}" + 
-                        (f" on {entity_id}" if entity_id else ""))
-        
-        except HomeAssistantAPIError:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=self.headers, json=payload) as response:
+                    response.raise_for_status()
+                    logger.info(f"Called service {domain}.{service} on {entity_id}")
+                    
+        except aiohttp.ClientError as e:
+            logger.error(f"Failed to call service {domain}.{service} on {entity_id}: {e}")
             raise
         except Exception as e:
-            logger.error(f"Error calling service {domain}.{service}: {str(e)}")
-            raise HomeAssistantAPIError(f"Failed to call service {domain}.{service}: {str(e)}")
+            logger.error(f"Unexpected error calling service: {e}")
+            raise
     
     async def turn_on(self, entity_id: str) -> None:
         """
-        Convenience method to turn on a switch or input_boolean entity.
+        Turn on a switch or input_boolean entity.
         
         Args:
-            entity_id: The entity ID to turn on
-            
+            entity_id: Entity to turn on (e.g., 'switch.pump_1', 'input_boolean.pump_lock')
+        
         Raises:
-            HomeAssistantAPIError: If the service call fails
+            aiohttp.ClientError: If the API request fails
         """
-        domain = entity_id.split('.')[0] if '.' in entity_id else 'switch'
-        await self.call_service(domain, "turn_on", entity_id=entity_id)
-        logger.info(f"Turned on {entity_id}")
+        domain = entity_id.split(".")[0] if "." in entity_id else "switch"
+        await self.call_service(domain, "turn_on", entity_id)
     
     async def turn_off(self, entity_id: str) -> None:
         """
-        Convenience method to turn off a switch or input_boolean entity.
+        Turn off a switch or input_boolean entity.
         
         Args:
-            entity_id: The entity ID to turn off
-            
+            entity_id: Entity to turn off (e.g., 'switch.pump_1', 'input_boolean.pump_lock')
+        
         Raises:
-            HomeAssistantAPIError: If the service call fails
+            aiohttp.ClientError: If the API request fails
         """
-        domain = entity_id.split('.')[0] if '.' in entity_id else 'switch'
-        await self.call_service(domain, "turn_off", entity_id=entity_id)
-        logger.info(f"Turned off {entity_id}")
+        domain = entity_id.split(".")[0] if "." in entity_id else "switch"
+        await self.call_service(domain, "turn_off", entity_id)
+    
+    async def is_entity_on(self, entity_id: str) -> bool:
+        """
+        Check if an entity is in the 'on' state.
+        
+        Args:
+            entity_id: Entity to check
+        
+        Returns:
+            True if entity state is 'on', False otherwise
+        
+        Raises:
+            aiohttp.ClientError: If the API request fails
+        """
+        state = await self.get_state(entity_id)
+        return state.state.lower() == "on"
+    
+    async def is_entity_off(self, entity_id: str) -> bool:
+        """
+        Check if an entity is in the 'off' state.
+        
+        Args:
+            entity_id: Entity to check
+        
+        Returns:
+            True if entity state is 'off', False otherwise
+        
+        Raises:
+            aiohttp.ClientError: If the API request fails
+        """
+        state = await self.get_state(entity_id)
+        return state.state.lower() == "off"
+
+
+# Singleton instance for use throughout the application
+_ha_client_instance: Optional[HomeAssistantClient] = None
+
+
+def get_ha_client() -> HomeAssistantClient:
+    """
+    Get the singleton Home Assistant client instance.
+    
+    Returns:
+        HomeAssistantClient instance
+    """
+    global _ha_client_instance
+    if _ha_client_instance is None:
+        _ha_client_instance = HomeAssistantClient()
+    return _ha_client_instance
+
+
+# ============================================================================
+# Entity Validation Helpers
+# ============================================================================
+
+async def validate_entity_exists(entity_id: str, client: Optional[HomeAssistantClient] = None) -> bool:
+    """
+    Validate that an entity exists in Home Assistant.
+    
+    This helper should be called before saving entity references to the database
+    to ensure the entity is valid and accessible.
+    
+    Args:
+        entity_id: The entity ID to validate (e.g., 'switch.zone_1')
+        client: Optional HomeAssistantClient instance (uses singleton if not provided)
+    
+    Returns:
+        True if entity exists and is accessible, False otherwise
+    
+    Example:
+        >>> if await validate_entity_exists('switch.zone_1'):
+        ...     # Save to database
+        ...     pass
+        ... else:
+        ...     raise ValueError("Entity not found")
+    """
+    if not entity_id:
+        logger.warning("Empty entity_id provided for validation")
+        return False
+    
+    ha_client = client or get_ha_client()
+    
+    try:
+        await ha_client.get_state(entity_id)
+        logger.debug(f"Entity validation successful: {entity_id}")
+        return True
+    except ValueError as e:
+        # Entity not found (404)
+        logger.warning(f"Entity validation failed: {e}")
+        return False
+    except aiohttp.ClientError as e:
+        # API error - log but don't fail validation
+        # (entity might exist but API is temporarily unavailable)
+        logger.error(f"Could not validate entity {entity_id} due to API error: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error validating entity {entity_id}: {e}")
+        return False
+
+
+async def validate_entity_domain(entity_id: str, expected_domain: str, 
+                                client: Optional[HomeAssistantClient] = None) -> bool:
+    """
+    Validate that an entity exists and belongs to the expected domain.
+    
+    Args:
+        entity_id: The entity ID to validate
+        expected_domain: Expected domain (e.g., 'switch', 'input_boolean', 'sensor')
+        client: Optional HomeAssistantClient instance
+    
+    Returns:
+        True if entity exists and has the correct domain, False otherwise
+    
+    Example:
+        >>> if await validate_entity_domain('switch.zone_1', 'switch'):
+        ...     # Entity is a valid switch
+        ...     pass
+    """
+    if not entity_id or "." not in entity_id:
+        logger.warning(f"Invalid entity_id format: {entity_id}")
+        return False
+    
+    # Check domain from entity_id
+    actual_domain = entity_id.split(".")[0]
+    if actual_domain != expected_domain:
+        logger.warning(f"Entity {entity_id} has domain '{actual_domain}', expected '{expected_domain}'")
+        return False
+    
+    # Verify entity exists
+    return await validate_entity_exists(entity_id, client)
+
+
+async def validate_switch_entity(entity_id: str, client: Optional[HomeAssistantClient] = None) -> bool:
+    """
+    Validate that an entity is a valid switch.
+    
+    Args:
+        entity_id: The entity ID to validate
+        client: Optional HomeAssistantClient instance
+    
+    Returns:
+        True if entity is a valid switch, False otherwise
+    """
+    return await validate_entity_domain(entity_id, "switch", client)
+
+
+async def validate_input_boolean_entity(entity_id: str, client: Optional[HomeAssistantClient] = None) -> bool:
+    """
+    Validate that an entity is a valid input_boolean.
+    
+    Args:
+        entity_id: The entity ID to validate
+        client: Optional HomeAssistantClient instance
+    
+    Returns:
+        True if entity is a valid input_boolean, False otherwise
+    """
+    return await validate_entity_domain(entity_id, "input_boolean", client)
+
+
+async def validate_input_datetime_entity(entity_id: str, client: Optional[HomeAssistantClient] = None) -> bool:
+    """
+    Validate that an entity is a valid input_datetime.
+    
+    Args:
+        entity_id: The entity ID to validate
+        client: Optional HomeAssistantClient instance
+    
+    Returns:
+        True if entity is a valid input_datetime, False otherwise
+    """
+    return await validate_entity_domain(entity_id, "input_datetime", client)
+
+
+async def validate_sensor_entity(entity_id: str, client: Optional[HomeAssistantClient] = None) -> bool:
+    """
+    Validate that an entity is a valid sensor.
+    
+    Args:
+        entity_id: The entity ID to validate
+        client: Optional HomeAssistantClient instance
+    
+    Returns:
+        True if entity is a valid sensor, False otherwise
+    """
+    return await validate_entity_domain(entity_id, "sensor", client)
+
+
+async def get_entity_friendly_name(entity_id: str, client: Optional[HomeAssistantClient] = None) -> Optional[str]:
+    """
+    Get the friendly name of an entity from its attributes.
+    
+    Args:
+        entity_id: The entity ID to query
+        client: Optional HomeAssistantClient instance
+    
+    Returns:
+        Friendly name if available, None otherwise
+    """
+    ha_client = client or get_ha_client()
+    
+    try:
+        state = await ha_client.get_state(entity_id)
+        return state.attributes.get("friendly_name")
+    except Exception as e:
+        logger.error(f"Could not get friendly name for {entity_id}: {e}")
+        return None

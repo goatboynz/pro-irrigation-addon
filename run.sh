@@ -2,7 +2,7 @@
 set -e
 
 echo "============================================================"
-echo "Pro-Irrigation Add-on - Startup Script"
+echo "Pro-Irrigation v2 - Room-Based System"
 echo "============================================================"
 
 # Read configuration from Home Assistant options
@@ -15,13 +15,13 @@ else
 fi
 
 # Set default number of workers (1 for single-threaded operation)
-# Multiple workers would require shared state management for scheduler/queue
 WORKERS="${WORKERS:-1}"
 
 # Database path
-DATABASE_PATH="${DATABASE_PATH:-/data/irrigation.db}"
+DATABASE_PATH="${DATABASE_PATH:-/data/irrigation_v2.db}"
 
 echo "Configuration:"
+echo "  Version: 2.0.0"
 echo "  Log level: $LOG_LEVEL"
 echo "  Workers: $WORKERS"
 echo "  Database path: $DATABASE_PATH"
@@ -50,8 +50,6 @@ else
 fi
 
 # Start the FastAPI backend server with uvicorn
-# The backend serves both the API and the static frontend files
-# Using single worker to ensure scheduler and queue processor run in one process
 echo "Starting FastAPI server..."
 echo "============================================================"
 

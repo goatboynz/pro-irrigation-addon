@@ -1,34 +1,31 @@
 <template>
   <div class="entity-selector">
-    <label v-if="label" class="form-label">
-      {{ label }}
-      <span v-if="required" class="required-indicator">*</span>
-    </label>
-    
+    <label v-if="label" :for="inputId">{{ label }}</label>
     <div class="selector-wrapper">
-      <select 
-        v-model="selectedValue"
-        class="form-select"
-        :disabled="loading || disabled"
-        @change="handleChange"
-      >
-        <option value="">{{ placeholder }}</option>
-        <option 
-          v-for="entity in filteredEntities" 
+      <input
+        :id="inputId"
+        v-model="searchQuery"
+        type="text"
+        :placeholder="placeholder"
+        @focus="showDropdown = true"
+        @blur="handleBlur"
+        @input="filterEntities"
+        class="selector-input"
+      />
+      <div v-if="showDropdown && filteredEntities.length > 0" class="dropdown">
+        <div
+          v-for="entity in filteredEntities"
           :key="entity.entity_id"
-          :value="entity.entity_id"
+          class="dropdown-item"
+          @mousedown.prevent="selectEntity(entity)"
         >
-          {{ entity.friendly_name || entity.entity_id }}
-        </option>
-      </select>
-      
-      <div v-if="loading" class="loading-indicator">
-        <div class="mini-spinner"></div>
+          <div class="entity-id">{{ entity.entity_id }}</div>
+          <div class="entity-name">{{ entity.friendly_name || entity.entity_id }}</div>
+        </div>
       </div>
+      <div v-if="loading" class="loading-indicator">Loading entities...</div>
+      <div v-if="error" class="error-message">{{ error }}</div>
     </div>
-    
-    <p v-if="hint" class="hint-text">{{ hint }}</p>
-    <p v-if="error" class="error-text">{{ error }}</p>
   </div>
 </template>
 
@@ -41,155 +38,165 @@ const props = defineProps({
     type: String,
     default: ''
   },
-  entityType: {
-    type: String,
-    required: true,
-    validator: (value) => ['switch', 'input_datetime', 'input_number', 'input_boolean'].includes(value)
-  },
   label: {
     type: String,
     default: ''
   },
   placeholder: {
     type: String,
-    default: 'Select an entity...'
+    default: 'Search for entity...'
   },
-  hint: {
-    type: String,
-    default: ''
-  },
-  required: {
-    type: Boolean,
-    default: false
-  },
-  disabled: {
-    type: Boolean,
-    default: false
-  },
-  error: {
-    type: String,
-    default: ''
+  filter: {
+    type: Function,
+    default: null
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'change'])
+const emit = defineEmits(['update:modelValue'])
 
-// Local state
+const inputId = `entity-selector-${Math.random().toString(36).substr(2, 9)}`
+const searchQuery = ref(props.modelValue)
+const showDropdown = ref(false)
 const entities = ref([])
 const loading = ref(false)
-const selectedValue = ref(props.modelValue)
+const error = ref(null)
 
-// Computed
 const filteredEntities = computed(() => {
-  return entities.value
+  if (!searchQuery.value) {
+    return props.filter ? entities.value.filter(props.filter) : entities.value
+  }
+  
+  const query = searchQuery.value.toLowerCase()
+  let filtered = entities.value.filter(entity => {
+    const entityId = entity.entity_id.toLowerCase()
+    const friendlyName = (entity.friendly_name || '').toLowerCase()
+    return entityId.includes(query) || friendlyName.includes(query)
+  })
+  
+  if (props.filter) {
+    filtered = filtered.filter(props.filter)
+  }
+  
+  return filtered.slice(0, 50) // Limit to 50 results
 })
 
-// Watch for external changes to modelValue
-watch(() => props.modelValue, (newValue) => {
-  selectedValue.value = newValue
-})
-
-// Load entities on mount
-onMounted(async () => {
-  await loadEntities()
-})
-
-// Methods
-const loadEntities = async () => {
+async function loadEntities() {
+  loading.value = true
+  error.value = null
   try {
-    loading.value = true
-    entities.value = await api.getAvailableEntities(props.entityType)
-  } catch (error) {
-    console.error('Failed to load entities:', error)
+    const response = await api.getHAEntities()
+    entities.value = response.data
+  } catch (err) {
+    error.value = 'Failed to load entities'
+    console.error('Failed to load entities:', err)
   } finally {
     loading.value = false
   }
 }
 
-const handleChange = () => {
-  emit('update:modelValue', selectedValue.value)
-  emit('change', selectedValue.value)
+function selectEntity(entity) {
+  searchQuery.value = entity.entity_id
+  emit('update:modelValue', entity.entity_id)
+  showDropdown.value = false
 }
+
+function handleBlur() {
+  setTimeout(() => {
+    showDropdown.value = false
+  }, 200)
+}
+
+function filterEntities() {
+  showDropdown.value = true
+}
+
+watch(() => props.modelValue, (newValue) => {
+  searchQuery.value = newValue
+})
+
+onMounted(() => {
+  loadEntities()
+})
 </script>
 
 <style scoped>
 .entity-selector {
-  margin-bottom: 16px;
+  margin-bottom: 1rem;
 }
 
-.form-label {
+.entity-selector label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 0.5rem;
   font-weight: 500;
-  color: var(--text-primary-color);
-  font-size: 14px;
-}
-
-.required-indicator {
-  color: var(--error-color);
-  margin-left: 2px;
 }
 
 .selector-wrapper {
   position: relative;
 }
 
-.form-select {
+.selector-input {
   width: 100%;
-  padding: 10px;
-  border: 1px solid var(--divider-color);
+  padding: 0.5rem;
+  border: 1px solid #ddd;
   border-radius: 4px;
-  font-size: 14px;
-  font-family: inherit;
-  background-color: var(--card-background-color);
-  color: var(--text-primary-color);
-  cursor: pointer;
-  transition: border-color 0.2s;
+  font-size: 1rem;
 }
 
-.form-select:focus {
+.selector-input:focus {
   outline: none;
-  border-color: var(--primary-color);
+  border-color: #3498db;
 }
 
-.form-select:disabled {
-  background-color: var(--secondary-background-color);
-  cursor: not-allowed;
-  opacity: 0.6;
+.dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  background: white;
+  border: 1px solid #ddd;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  z-index: 1000;
+}
+
+.dropdown-item {
+  padding: 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.dropdown-item:hover {
+  background-color: #f8f9fa;
+}
+
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.entity-id {
+  font-family: monospace;
+  font-size: 0.875rem;
+  color: #2c3e50;
+}
+
+.entity-name {
+  font-size: 0.75rem;
+  color: #7f8c8d;
+  margin-top: 0.25rem;
 }
 
 .loading-indicator {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
+  padding: 0.5rem;
+  color: #7f8c8d;
+  font-size: 0.875rem;
 }
 
-.mini-spinner {
-  border: 2px solid var(--divider-color);
-  border-top: 2px solid var(--primary-color);
-  border-radius: 50%;
-  width: 16px;
-  height: 16px;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-.hint-text {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--text-secondary-color);
-}
-
-.error-text {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--error-color);
-  font-weight: 500;
+.error-message {
+  padding: 0.5rem;
+  color: #e74c3c;
+  font-size: 0.875rem;
 }
 </style>

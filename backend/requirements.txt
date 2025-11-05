@@ -1,22 +1,16 @@
-# Core web framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+# FastAPI and web server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
 
 # Database
-sqlalchemy==2.0.23
+sqlalchemy==2.0.25
 
 # HTTP client for Home Assistant API
 aiohttp==3.9.1
 
-# Scheduling
-apscheduler==3.10.4
-
 # Data validation
-pydantic==2.5.0
+pydantic==2.5.3
 
-# CORS middleware
-python-multipart==0.0.6
-
-# Testing
-pytest==7.4.3
-pytest-asyncio==0.21.1
+# Background task scheduling
+apscheduler==3.10.4

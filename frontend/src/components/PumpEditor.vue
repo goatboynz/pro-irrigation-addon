@@ -2,19 +2,19 @@
   <div v-if="show" class="modal-overlay" @click.self="handleCancel">
     <div class="modal-content">
       <div class="modal-header">
-        <h2>{{ isEditMode ? 'Edit Zone' : 'Create Zone' }}</h2>
+        <h2>{{ isEditMode ? 'Edit Pump' : 'Create Pump' }}</h2>
         <button @click="handleCancel" class="btn-close">&times;</button>
       </div>
       
       <div class="modal-body">
         <form @submit.prevent="handleSubmit">
           <div class="form-group">
-            <label for="zoneName">Zone Name *</label>
+            <label for="pumpName">Pump Name *</label>
             <input 
-              id="zoneName"
+              id="pumpName"
               v-model="formData.name" 
               type="text" 
-              placeholder="e.g., Front Left"
+              placeholder="e.g., Main Pump"
               required
               class="form-input"
               :disabled="saving"
@@ -23,13 +23,13 @@
 
           <div class="form-group">
             <EntitySelector 
-              v-model="formData.switch_entity"
-              label="Switch Entity *"
-              placeholder="Select zone switch entity"
-              :filter="filterSwitchEntities"
+              v-model="formData.lock_entity"
+              label="Lock Entity *"
+              placeholder="Select pump lock entity"
+              :filter="filterLockEntities"
               :disabled="saving"
             />
-            <p class="field-hint">Home Assistant entity that controls the zone valve (e.g., switch.zone_1)</p>
+            <p class="field-hint">Home Assistant entity that controls the pump lock (e.g., switch.pump_lock)</p>
           </div>
 
           <div v-if="error" class="error-message">
@@ -50,7 +50,7 @@
               class="btn-primary"
               :disabled="saving || !isFormValid"
             >
-              {{ saving ? 'Saving...' : (isEditMode ? 'Update Zone' : 'Create Zone') }}
+              {{ saving ? 'Saving...' : (isEditMode ? 'Update Pump' : 'Create Pump') }}
             </button>
           </div>
         </form>
@@ -69,11 +69,11 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
-  zone: {
+  pump: {
     type: Object,
     default: null
   },
-  pumpId: {
+  roomId: {
     type: Number,
     required: true
   }
@@ -83,32 +83,33 @@ const emit = defineEmits(['close', 'saved'])
 
 const formData = ref({
   name: '',
-  switch_entity: ''
+  lock_entity: ''
 })
 
 const saving = ref(false)
 const error = ref(null)
 
-const isEditMode = computed(() => props.zone !== null)
+const isEditMode = computed(() => props.pump !== null)
 
 const isFormValid = computed(() => {
   return formData.value.name.trim().length > 0 && 
-         formData.value.switch_entity.trim().length > 0
+         formData.value.lock_entity.trim().length > 0
 })
 
-// Filter for switch entities
-function filterSwitchEntities(entity) {
+// Filter for lock entities (switches, locks, etc.)
+function filterLockEntities(entity) {
   const entityId = entity.entity_id.toLowerCase()
   return entityId.startsWith('switch.') || 
+         entityId.startsWith('lock.') ||
          entityId.startsWith('input_boolean.')
 }
 
-// Watch for zone prop changes to populate form
-watch(() => props.zone, (newZone) => {
-  if (newZone) {
+// Watch for pump prop changes to populate form
+watch(() => props.pump, (newPump) => {
+  if (newPump) {
     formData.value = {
-      name: newZone.name || '',
-      switch_entity: newZone.switch_entity || ''
+      name: newPump.name || '',
+      lock_entity: newPump.lock_entity || ''
     }
   } else {
     resetForm()
@@ -117,7 +118,7 @@ watch(() => props.zone, (newZone) => {
 
 // Watch for show prop to reset form when opening
 watch(() => props.show, (newShow) => {
-  if (newShow && !props.zone) {
+  if (newShow && !props.pump) {
     resetForm()
   }
   error.value = null
@@ -126,7 +127,7 @@ watch(() => props.show, (newShow) => {
 function resetForm() {
   formData.value = {
     name: '',
-    switch_entity: ''
+    lock_entity: ''
   }
 }
 
@@ -139,20 +140,20 @@ async function handleSubmit() {
   try {
     const submitData = {
       name: formData.value.name.trim(),
-      switch_entity: formData.value.switch_entity.trim()
+      lock_entity: formData.value.lock_entity.trim()
     }
 
     if (isEditMode.value) {
-      await api.updateZone(props.zone.id, submitData)
+      await api.updatePump(props.pump.id, submitData)
     } else {
-      await api.createZone(props.pumpId, submitData)
+      await api.createPump(props.roomId, submitData)
     }
 
     emit('saved')
     emit('close')
   } catch (err) {
-    error.value = err.message || 'Failed to save zone'
-    console.error('Error saving zone:', err)
+    error.value = err.message || 'Failed to save pump'
+    console.error('Error saving pump:', err)
   } finally {
     saving.value = false
   }

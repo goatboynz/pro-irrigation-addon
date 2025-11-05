@@ -1,327 +1,232 @@
 # Deployment Checklist
 
-Use this checklist before deploying the Pro-Irrigation Add-on to production or publishing to a repository.
+Use this checklist to ensure everything is ready before deploying to GitHub and Home Assistant.
 
-## Pre-Deployment Verification
+## Pre-Deployment Checks
+
+### Code Quality
+- [ ] All features implemented and tested
+- [ ] No console.log or debug statements in production code
+- [ ] Error handling implemented for all API calls
+- [ ] Database migrations tested
+- [ ] Frontend builds without errors (`npm run build`)
+- [ ] Backend starts without errors
 
 ### Documentation
-
-- [x] README.md is complete with:
-  - [x] Installation instructions
-  - [x] Configuration options
-  - [x] Usage guide
-  - [x] Troubleshooting section
-  - [x] API documentation reference
-
-- [x] CHANGELOG.md is created with:
-  - [x] Version 1.0.0 documented
-  - [x] All features listed
-  - [x] Known limitations documented
-
-- [x] INSTALLATION.md provides:
-  - [x] Detailed installation steps
-  - [x] Testing procedures
-  - [x] Verification steps
-
-- [x] LICENSE file is present
-
-- [ ] ICON.md instructions followed (icon.png created)
+- [ ] README.md is complete and accurate
+- [ ] INSTALL.md has clear installation instructions
+- [ ] CHANGELOG.md is up to date
+- [ ] API documentation is complete (check /docs endpoint)
+- [ ] Code comments are clear and helpful
 
 ### Configuration Files
+- [ ] config.yaml has correct version number
+- [ ] config.yaml has correct repository URL
+- [ ] Dockerfile builds successfully
+- [ ] run.sh is executable and works
+- [ ] requirements.txt has all dependencies
+- [ ] package.json has correct version
 
-- [x] config.yaml is finalized:
-  - [x] Version number set (1.0.0)
-  - [x] Correct slug (pro-irrigation)
-  - [x] All architectures listed (aarch64, amd64, armv7)
-  - [x] Ingress enabled
-  - [x] Correct port (8000)
-  - [x] Panel icon set (mdi:sprinkler-variant)
-  - [x] Options schema defined
-  - [x] API access flags set
+### Assets
+- [ ] icon.png exists (512x512 PNG)
+- [ ] logo.png exists (256x256 PNG)
+- [ ] Images are optimized for web
+- [ ] No placeholder images remain
 
-- [x] Dockerfile is optimized:
-  - [x] Multi-stage build implemented
-  - [x] Frontend built in separate stage
-  - [x] System dependencies installed (gcc, jq)
-  - [x] Python dependencies installed
-  - [x] Health check configured
-  - [x] Environment variables set
-  - [x] Proper labels added
+### Version Numbers
+- [ ] config.yaml version: 2.0.0
+- [ ] frontend/package.json version: 2.0.0
+- [ ] Dockerfile label version: 2.0.0
+- [ ] CHANGELOG.md has entry for 2.0.0
+- [ ] All version numbers match
 
-- [x] run.sh is functional:
-  - [x] Reads Home Assistant options
-  - [x] Validates data directory
-  - [x] Configurable log level
-  - [x] Single worker enforced
-  - [x] Proper error handling
+### Security
+- [ ] No hardcoded credentials
+- [ ] No API keys in code
+- [ ] .gitignore excludes sensitive files
+- [ ] Database files excluded from git
+- [ ] Environment variables used for secrets
 
-- [x] .dockerignore is configured:
-  - [x] Excludes unnecessary files
-  - [x] Reduces build context size
+### Testing
+- [ ] Manual testing completed
+- [ ] All CRUD operations work
+- [ ] Scheduler runs correctly
+- [ ] Queue processor works
+- [ ] Manual control functions
+- [ ] Sensor data retrieval works
+- [ ] Settings can be updated
+- [ ] System reset works
 
-- [x] repository.json is created
+## GitHub Setup
 
-### Build Files
+### Repository Creation
+- [ ] GitHub account ready
+- [ ] Repository created: pro-irrigation-addon
+- [ ] Repository is PUBLIC
+- [ ] Repository description added
+- [ ] Topics added (home-assistant, irrigation, etc.)
 
-- [x] build.sh script is executable
-- [x] Build script supports multiple platforms
+### Initial Commit
+- [ ] Git initialized
+- [ ] All files added to git
+- [ ] Initial commit created
+- [ ] Remote repository configured
+- [ ] Code pushed to GitHub
 
-## Testing Checklist
+### Repository Configuration
+- [ ] README.md displays correctly on GitHub
+- [ ] LICENSE file is present
+- [ ] .gitignore is working
+- [ ] GitHub Actions enabled (optional)
+- [ ] Issues enabled
+- [ ] Discussions enabled (optional)
 
-### Local Testing
+### Release Creation
+- [ ] First release created (v2.0.0)
+- [ ] Release notes from CHANGELOG
+- [ ] Release tagged correctly
+- [ ] Release published
 
-- [ ] Docker build completes successfully:
-  ```bash
-  ./build.sh
-  ```
+## Home Assistant Testing
 
-- [ ] Container runs locally:
-  ```bash
-  docker run -p 8000:8000 -v $(pwd)/data:/data pro-irrigation:latest
-  ```
-
-- [ ] Web interface loads at http://localhost:8000
-
-- [ ] API documentation accessible at http://localhost:8000/api/docs
-
-- [ ] Health check endpoint responds:
-  ```bash
-  curl http://localhost:8000/api/health
-  ```
-
-### Home Assistant Testing
-
-- [ ] Add-on installs successfully in Home Assistant
-
+### Installation
+- [ ] Repository added to Home Assistant
+- [ ] Add-on appears in store
+- [ ] Add-on installs successfully
 - [ ] Add-on starts without errors
-
-- [ ] Logs show successful startup
-
-- [ ] Ingress integration works (accessible from sidebar)
-
-- [ ] Database is created at /data/irrigation.db
-
-- [ ] Can create pumps via UI
-
-- [ ] Can create zones via UI
-
-- [ ] Entity discovery works (switches, input helpers)
-
-- [ ] Global settings can be configured
-
-- [ ] Manual mode scheduling works
-
-- [ ] Auto mode scheduling works (with global settings)
-
-- [ ] Pump queue system functions correctly
-
-- [ ] Real-time status updates work
-
-- [ ] Zones execute at scheduled times
-
-- [ ] Pump locks prevent simultaneous execution
-
-### Multi-Architecture Testing
-
-- [ ] Build succeeds for aarch64:
-  ```bash
-  ./build.sh --platform linux/arm64
-  ```
-
-- [ ] Build succeeds for amd64:
-  ```bash
-  ./build.sh --platform linux/amd64
-  ```
-
-- [ ] Build succeeds for armv7:
-  ```bash
-  ./build.sh --platform linux/arm/v7
-  ```
-
-- [ ] Test on actual hardware if available
-
-## Code Quality Checks
-
-### Backend
-
-- [ ] All Python tests pass:
-  ```bash
-  cd backend && pytest
-  ```
-
-- [ ] No linting errors:
-  ```bash
-  cd backend && pylint **/*.py
-  ```
-
-- [ ] Type checking passes (if using mypy):
-  ```bash
-  cd backend && mypy .
-  ```
-
-### Frontend
-
-- [ ] Frontend builds successfully:
-  ```bash
-  cd frontend && npm run build
-  ```
-
-- [ ] No console errors in browser
-
-- [ ] All components render correctly
-
-- [ ] Responsive design works on mobile
-
-## Security Checks
-
-- [ ] No hardcoded credentials or tokens
-
-- [ ] Environment variables used for sensitive data
-
-- [ ] Input validation on all API endpoints
-
-- [ ] SQL injection prevention (SQLAlchemy ORM)
-
-- [ ] XSS protection in frontend
-
-- [ ] CORS properly configured
-
-- [ ] Authentication via Home Assistant Ingress
-
-## Performance Checks
-
-- [ ] API response time < 200ms
-
-- [ ] Frontend loads in < 2 seconds
-
-- [ ] Scheduler cycle completes in < 5 seconds (100 zones)
-
-- [ ] Memory usage < 200MB under normal load
-
-- [ ] No memory leaks during extended operation
-
-## Documentation Review
-
-- [ ] All URLs updated (replace yourusername with actual username)
-
-- [ ] Version numbers consistent across all files
-
-- [ ] Screenshots added to README (if available)
-
-- [ ] API documentation is accurate
-
-- [ ] Troubleshooting section covers common issues
-
-- [ ] Installation instructions tested by someone else
-
-## Repository Preparation
-
-- [ ] Git repository initialized
-
-- [ ] All files committed
-
-- [ ] .gitignore properly configured
-
-- [ ] Tags created for version 1.0.0:
-  ```bash
-  git tag -a v1.0.0 -m "Release version 1.0.0"
-  ```
-
-- [ ] Repository pushed to GitHub/GitLab
-
-- [ ] Repository is public (or accessible to users)
-
-- [ ] Issues enabled on repository
-
-- [ ] README displays correctly on repository page
-
-## Home Assistant Add-on Store
-
-- [ ] Repository URL is correct in repository.json
-
-- [ ] Add-on appears in store after adding repository
-
-- [ ] Add-on metadata displays correctly
-
-- [ ] Icon displays (if icon.png created)
-
-- [ ] Installation from store works
-
-- [ ] Updates work correctly (for future versions)
+- [ ] Logs show "Startup complete"
+
+### Functionality
+- [ ] Web interface loads
+- [ ] Can create rooms
+- [ ] Can create pumps
+- [ ] Can create zones
+- [ ] Can create water events
+- [ ] Can add sensors
+- [ ] Manual control works
+- [ ] Settings can be changed
+
+### Integration
+- [ ] Can discover Home Assistant entities
+- [ ] Can control switches
+- [ ] Can read sensor values
+- [ ] Can query entity states
+- [ ] Ingress works correctly
+- [ ] Sidebar integration works
+
+### Performance
+- [ ] Frontend loads quickly (< 2 seconds)
+- [ ] API responses are fast (< 200ms)
+- [ ] Scheduler runs on time
+- [ ] Queue processor is responsive
+- [ ] No memory leaks
+- [ ] CPU usage is reasonable
 
 ## Post-Deployment
 
-- [ ] Monitor logs for errors
-
-- [ ] Check for user-reported issues
-
-- [ ] Verify all features work in production
-
-- [ ] Document any issues found
-
-- [ ] Create GitHub issues for bugs
-
-- [ ] Plan next release features
-
-## Optional Enhancements
-
-- [ ] Create demo video or GIF
-
+### Documentation
+- [ ] Update README with actual GitHub URL
 - [ ] Add screenshots to README
+- [ ] Create wiki pages (optional)
+- [ ] Write blog post (optional)
 
-- [ ] Create icon.png (256x256)
+### Community
+- [ ] Post to Home Assistant Community forum
+- [ ] Share on Reddit r/homeassistant
+- [ ] Tweet about release (optional)
+- [ ] Add to awesome-home-assistant list
 
-- [ ] Set up CI/CD pipeline
+### Monitoring
+- [ ] Watch for GitHub issues
+- [ ] Monitor discussions
+- [ ] Check for pull requests
+- [ ] Review user feedback
 
-- [ ] Add automated testing
-
-- [ ] Create contribution guidelines (CONTRIBUTING.md)
-
+### Maintenance
 - [ ] Set up issue templates
+- [ ] Create contributing guidelines
+- [ ] Plan next version features
+- [ ] Schedule regular updates
 
-- [ ] Create pull request template
+## Troubleshooting Common Issues
 
-- [ ] Add code of conduct
+### Build Fails
+- Check Dockerfile syntax
+- Verify all dependencies are listed
+- Test build locally: `docker build -t test .`
+- Check GitHub Actions logs
 
-- [ ] Set up automated builds for multiple architectures
+### Add-on Won't Install
+- Verify repository is public
+- Check config.yaml syntax
+- Ensure all required files exist
+- Check Home Assistant logs
 
-## Release Announcement
+### Frontend Not Loading
+- Verify frontend built correctly
+- Check static files are in dist/
+- Verify Dockerfile copies dist/
+- Check browser console for errors
 
-- [ ] Post on Home Assistant Community forum
+### API Errors
+- Check backend logs
+- Verify database is accessible
+- Check Home Assistant API token
+- Test endpoints with curl
 
-- [ ] Share on Reddit (r/homeassistant)
+### Scheduler Not Running
+- Check scheduler logs
+- Verify events are configured
+- Check room/event enabled status
+- Verify entity IDs are correct
 
-- [ ] Tweet about release (if applicable)
+## Final Verification
 
-- [ ] Update personal website/blog
+Before announcing your add-on:
 
-- [ ] Notify beta testers
+1. **Fresh Install Test**
+   - Remove add-on completely
+   - Re-add repository
+   - Install from scratch
+   - Verify everything works
 
-## Version Control
+2. **Documentation Review**
+   - Read through all docs as a new user
+   - Verify all links work
+   - Check for typos
+   - Ensure clarity
 
-Current Version: **1.0.0**
+3. **Community Readiness**
+   - Prepare to answer questions
+   - Have troubleshooting guide ready
+   - Be responsive to issues
+   - Thank early adopters
 
-Files to update for version changes:
-- config.yaml (version field)
-- CHANGELOG.md (new version section)
-- Dockerfile (LABEL io.hass.version)
-- README.md (if version-specific info)
+## Success Criteria
+
+Your add-on is ready when:
+
+- ✅ All checklist items are complete
+- ✅ Fresh install works perfectly
+- ✅ Documentation is clear and complete
+- ✅ No critical bugs remain
+- ✅ You're ready to support users
 
 ## Notes
 
-- Keep this checklist updated for future releases
-- Add items based on lessons learned
-- Document any deployment issues encountered
-- Share feedback with development team
+- Keep this checklist updated as you add features
+- Use it for every release
+- Share with contributors
+- Adapt to your workflow
 
-## Sign-off
+## Resources
 
-- [ ] All critical items checked
-- [ ] All tests passed
-- [ ] Documentation reviewed
-- [ ] Ready for production deployment
+- Home Assistant Add-on Docs: https://developers.home-assistant.io/docs/add-ons
+- GitHub Docs: https://docs.github.com
+- Docker Best Practices: https://docs.docker.com/develop/dev-best-practices/
 
-**Deployed by**: _______________  
-**Date**: _______________  
-**Version**: 1.0.0  
-**Notes**: _______________
+---
+
+**Remember**: It's better to delay release and get it right than to rush and have a poor user experience.
+
+Good luck with your deployment! 🚀

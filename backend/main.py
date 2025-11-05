@@ -1,510 +1,281 @@
 """
-Pro-Irrigation Add-on Main Application
+FastAPI application for v2 room-based irrigation system.
 
-This is the main entry point for the FastAPI backend application.
-It initializes the database, sets up the API routes, and configures
-middleware for CORS and error handling. It also manages the lifecycle
-of the scheduler engine and queue processor.
+This module provides:
+- FastAPI application initialization
+- CORS configuration for Home Assistant Ingress
+- Database lifecycle management
+- Health check endpoint
+- Static file serving for frontend
 """
 
-import logging
-import os
-import signal
-import sys
-from datetime import datetime
-from contextlib import asynccontextmanager
-from queue import Queue
-from typing import Dict
-
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
+from contextlib import asynccontextmanager
+import os
 
-from .models.database import init_db, get_db, check_db_health
-from .models.schemas import HealthResponse, SystemStatusResponse
-from .models.pump import Pump
-from .models.zone import Zone
-
-# Import routers
-from .routers import pumps, zones, entities, settings
-
-# Import services
-from .services.ha_client import HomeAssistantClient
-from .services.scheduler import SchedulerEngine
-from .services.queue_processor import QueueProcessor
-
-# Configure logging
-log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-log_dir = os.getenv("LOG_DIR", "/data/logs")
-
-# Create log directory if it doesn't exist
-os.makedirs(log_dir, exist_ok=True)
-
-# Configure logging with both console and file handlers
-from logging.handlers import RotatingFileHandler
-
-# Create formatters
-detailed_formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
-)
-simple_formatter = logging.Formatter(
-    '%(asctime)s - %(levelname)s - %(message)s'
-)
-
-# Console handler (simple format)
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(log_level)
-console_handler.setFormatter(simple_formatter)
-
-# File handler with rotation (detailed format)
-file_handler = RotatingFileHandler(
-    os.path.join(log_dir, 'pro-irrigation.log'),
-    maxBytes=10 * 1024 * 1024,  # 10 MB
-    backupCount=5
-)
-file_handler.setLevel(log_level)
-file_handler.setFormatter(detailed_formatter)
-
-# Error file handler (errors only)
-error_handler = RotatingFileHandler(
-    os.path.join(log_dir, 'pro-irrigation-errors.log'),
-    maxBytes=10 * 1024 * 1024,  # 10 MB
-    backupCount=5
-)
-error_handler.setLevel(logging.ERROR)
-error_handler.setFormatter(detailed_formatter)
-
-# Configure root logger
-logging.basicConfig(
-    level=log_level,
-    handlers=[console_handler, file_handler, error_handler]
-)
-
-logger = logging.getLogger(__name__)
-logger.info(f"Logging configured: level={log_level}, log_dir={log_dir}")
-
-# Global instances for scheduler and queue processor
-scheduler_engine: SchedulerEngine = None
-queue_processor: QueueProcessor = None
-pump_queues: Dict[int, Queue] = {}
-ha_client: HomeAssistantClient = None
+from backend.models.database import create_tables, engine
+from backend.models.v2_settings import SystemSettings
+from backend.models.database import SessionLocal
+from backend.routers import rooms, pumps, zones, water_events, sensors, settings, manual
+from backend.services.scheduler import get_scheduler
+from backend.services.queue_processor import get_queue_processor
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Lifespan context manager for application startup and shutdown.
+    Application lifespan manager for startup and shutdown events.
     
-    This function runs on application startup to initialize the database,
-    start the scheduler engine and queue processor, and on shutdown to
-    perform cleanup and graceful shutdown of all services.
+    Startup:
+        - Create database tables if they don't exist
+        - Initialize default SystemSettings if not present
+        - Start queue processor background task
+        - Start scheduler background task
+    
+    Shutdown:
+        - Stop scheduler
+        - Stop queue processor
+        - Close database connections
     """
-    global scheduler_engine, queue_processor, pump_queues, ha_client
+    # Startup
+    print("Starting up irrigation system...")
     
-    # ========================================================================
-    # STARTUP
-    # ========================================================================
-    logger.info("=" * 70)
-    logger.info("Starting Pro-Irrigation Add-on v1.0.0")
-    logger.info("=" * 70)
+    # Create all tables
+    create_tables()
+    print("Database tables created/verified")
     
+    # Initialize default SystemSettings if not exists
+    db = SessionLocal()
     try:
-        # Step 1: Initialize database
-        logger.info("Initializing database...")
-        init_db()
-        logger.info("✓ Database initialized successfully")
-        
-        # Step 2: Initialize Home Assistant client
-        logger.info("Initializing Home Assistant client...")
-        supervisor_token = os.getenv("SUPERVISOR_TOKEN")
-        if not supervisor_token:
-            logger.warning("SUPERVISOR_TOKEN not found, using default for development")
-            supervisor_token = "dev_token"
-        
-        ha_client = HomeAssistantClient(supervisor_token)
-        logger.info("✓ Home Assistant client initialized")
-        
-        # Step 3: Initialize pump queues (shared between scheduler and processor)
-        logger.info("Initializing pump queues...")
-        pump_queues = {}
-        logger.info("✓ Pump queues initialized")
-        
-        # Step 4: Initialize and start scheduler engine
-        logger.info("Starting scheduler engine...")
-        scheduler_engine = SchedulerEngine(ha_client, pump_queues)
-        scheduler_engine.start()
-        logger.info("✓ Scheduler engine started (60-second interval)")
-        
-        # Step 5: Initialize and start queue processor
-        logger.info("Starting queue processor...")
-        queue_processor = QueueProcessor(ha_client, pump_queues)
-        queue_processor.start()
-        logger.info("✓ Queue processor started (1-second interval)")
-        
-        logger.info("=" * 70)
-        logger.info("Pro-Irrigation Add-on startup complete")
-        logger.info("=" * 70)
-        
-    except Exception as e:
-        logger.error(f"Failed to start Pro-Irrigation Add-on: {str(e)}", exc_info=True)
-        raise
+        settings = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
+        if not settings:
+            default_settings = SystemSettings(
+                id=1,
+                pump_startup_delay_seconds=5,
+                zone_switch_delay_seconds=2,
+                scheduler_interval_seconds=60
+            )
+            db.add(default_settings)
+            db.commit()
+            print("Default system settings initialized")
+        else:
+            print("System settings already exist")
+    finally:
+        db.close()
+    
+    # Start background tasks
+    print("Starting background tasks...")
+    
+    # Start queue processor
+    queue_processor = get_queue_processor()
+    await queue_processor.start()
+    print("Queue processor started")
+    
+    # Start scheduler
+    scheduler = get_scheduler()
+    await scheduler.start()
+    print("Scheduler started")
+    
+    print("Startup complete")
     
     yield
     
-    # ========================================================================
-    # SHUTDOWN
-    # ========================================================================
-    logger.info("=" * 70)
-    logger.info("Shutting down Pro-Irrigation Add-on")
-    logger.info("=" * 70)
+    # Shutdown
+    print("Shutting down irrigation system...")
     
-    try:
-        # Stop queue processor first to prevent new job execution
-        if queue_processor:
-            logger.info("Stopping queue processor...")
-            queue_processor.stop()
-            logger.info("✓ Queue processor stopped")
-        
-        # Stop scheduler engine to prevent new jobs from being created
-        if scheduler_engine:
-            logger.info("Stopping scheduler engine...")
-            scheduler_engine.stop()
-            logger.info("✓ Scheduler engine stopped")
-        
-        logger.info("=" * 70)
-        logger.info("Pro-Irrigation Add-on shutdown complete")
-        logger.info("=" * 70)
-        
-    except Exception as e:
-        logger.error(f"Error during shutdown: {str(e)}", exc_info=True)
+    # Stop background tasks
+    print("Stopping background tasks...")
+    scheduler = get_scheduler()
+    await scheduler.stop()
+    print("Scheduler stopped")
+    
+    queue_processor = get_queue_processor()
+    await queue_processor.stop()
+    print("Queue processor stopped")
+    
+    # Close database
+    engine.dispose()
+    print("Shutdown complete")
 
 
-# Create FastAPI application
+# Create FastAPI application with comprehensive API documentation
 app = FastAPI(
-    title="Pro-Irrigation Add-on API",
-    description="REST API for Pro-Irrigation Home Assistant Add-on",
-    version="1.0.0",
-    lifespan=lifespan
+    title="Room-Based Irrigation System API",
+    description="""
+## Overview
+
+The Room-Based Irrigation System provides a comprehensive API for managing irrigation in grow rooms.
+The system is organized hierarchically: Rooms contain Pumps, Pumps contain Zones, and Rooms have Water Events
+that are assigned to specific Zones.
+
+## Architecture
+
+```
+Rooms
+  ├── Pumps
+  │   └── Zones
+  ├── Water Events (P1/P2)
+  │   └── Assigned Zones
+  └── Environmental Sensors
+```
+
+## Key Concepts
+
+### Rooms
+Rooms represent physical grow spaces with their own lighting schedules. Each room can have multiple pumps,
+water events, and environmental sensors.
+
+### Pumps
+Pumps supply water to zones. Each pump has a lock entity (input_boolean) that prevents multiple zones
+from running simultaneously. Pumps maintain a queue of execution jobs.
+
+### Zones
+Zones are individual irrigation areas controlled by switch entities. Each zone belongs to a pump and
+can be assigned to multiple water events.
+
+### Water Events
+Water events define when irrigation should occur:
+- **P1 Events**: Triggered after lights turn on (with configurable delay)
+- **P2 Events**: Triggered at specific times of day
+
+### Execution Flow
+
+1. Scheduler checks for due events every 60 seconds
+2. When event is due, jobs are created for assigned zones
+3. Jobs are added to the pump's queue
+4. Queue processor executes jobs sequentially:
+   - Turn on pump lock
+   - Wait for pump startup delay (default: 5s)
+   - Turn on zone switch
+   - Wait for duration
+   - Turn off zone switch
+   - Wait for zone switch delay (default: 2s)
+   - Turn off pump lock
+
+## Authentication
+
+This API is designed to run as a Home Assistant add-on and uses Home Assistant's authentication
+via Ingress. No additional authentication is required when accessed through Home Assistant.
+
+## Rate Limiting
+
+No rate limiting is currently implemented. Use responsibly.
+
+## Error Handling
+
+All endpoints return standard HTTP status codes:
+- 200: Success
+- 201: Created
+- 400: Bad Request (validation error)
+- 404: Not Found
+- 500: Internal Server Error
+
+Error responses include a detail message explaining the issue.
+    """,
+    version="2.0.0",
+    lifespan=lifespan,
+    contact={
+        "name": "Pro-Irrigation Support",
+        "url": "https://github.com/goatboynz/pro-irrigation-addon",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://github.com/goatboynz/pro-irrigation-addon/blob/main/LICENSE",
+    },
+    openapi_tags=[
+        {
+            "name": "Rooms",
+            "description": "Operations for managing grow rooms. Rooms are the top-level organizational unit.",
+        },
+        {
+            "name": "Pumps",
+            "description": "Operations for managing pumps. Each pump belongs to a room and contains zones.",
+        },
+        {
+            "name": "Zones",
+            "description": "Operations for managing irrigation zones. Each zone belongs to a pump.",
+        },
+        {
+            "name": "Water Events",
+            "description": "Operations for managing water events (P1 and P2). Events are assigned to zones.",
+        },
+        {
+            "name": "Sensors",
+            "description": "Operations for managing environmental sensors and retrieving sensor data.",
+        },
+        {
+            "name": "Settings",
+            "description": "Operations for managing system settings and configuration.",
+        },
+        {
+            "name": "Manual Control",
+            "description": "Operations for manual zone control and emergency stop.",
+        },
+        {
+            "name": "System",
+            "description": "System health and information endpoints.",
+        },
+    ],
 )
 
-# Configure CORS middleware
-# Allow all origins since the frontend is served through Home Assistant Ingress
+# Configure CORS for Home Assistant Ingress
+# Home Assistant Ingress requires permissive CORS settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins for HA Ingress compatibility
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Include routers
+app.include_router(rooms.router)
 app.include_router(pumps.router)
 app.include_router(zones.router)
-app.include_router(entities.router)
+app.include_router(water_events.router)
+app.include_router(sensors.router)
 app.include_router(settings.router)
-
-# Serve frontend static files
-# The frontend is built to backend/static directory
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-if os.path.exists(static_dir):
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
-    logger.info(f"Serving frontend static files from {static_dir}")
-else:
-    logger.warning(f"Static directory not found: {static_dir}")
+app.include_router(manual.router)
 
 
-# ============================================================================
-# Health Check and System Status Endpoints
-# ============================================================================
-
-@app.get("/api/health", response_model=HealthResponse, tags=["System"])
+@app.get("/health", tags=["System"])
 async def health_check():
     """
     Health check endpoint.
     
-    Returns the health status of the application and database connection.
-    This endpoint can be used by monitoring systems to verify the service
-    is running correctly.
-    
     Returns:
-        HealthResponse: Health status information
-    """
-    db_healthy = check_db_health()
-    
-    return HealthResponse(
-        status="healthy" if db_healthy else "unhealthy",
-        database="connected" if db_healthy else "disconnected",
-        timestamp=datetime.now()
-    )
-
-
-@app.get("/api/status", response_model=SystemStatusResponse, tags=["System"])
-async def system_status(db: Session = Depends(get_db)):
-    """
-    System status endpoint.
-    
-    Returns overall system status including database health and
-    statistics about pumps and zones.
-    
-    Args:
-        db: Database session (injected)
-    
-    Returns:
-        SystemStatusResponse: System status information
-    """
-    try:
-        db_healthy = check_db_health()
-        
-        # Get statistics
-        total_pumps = db.query(Pump).count()
-        total_zones = db.query(Zone).count()
-        enabled_zones = db.query(Zone).filter(Zone.enabled == True).count()
-        
-        return SystemStatusResponse(
-            status="operational" if db_healthy else "degraded",
-            database_healthy=db_healthy,
-            total_pumps=total_pumps,
-            total_zones=total_zones,
-            enabled_zones=enabled_zones,
-            timestamp=datetime.now()
-        )
-    
-    except Exception as e:
-        logger.error(f"Error getting system status: {str(e)}")
-        return SystemStatusResponse(
-            status="error",
-            database_healthy=False,
-            total_pumps=0,
-            total_zones=0,
-            enabled_zones=0,
-            timestamp=datetime.now()
-        )
-
-
-# ============================================================================
-# Error Handlers
-# ============================================================================
-
-from fastapi import Request
-from fastapi.exceptions import RequestValidationError
-from sqlalchemy.exc import SQLAlchemyError
-
-from .exceptions import (
-    ProIrrigationException,
-    DatabaseException,
-    HomeAssistantException,
-    ValidationException,
-    SchedulerException,
-    QueueProcessorException,
-    ConfigurationException
-)
-from .services.ha_client import HomeAssistantAPIError
-
-
-@app.exception_handler(ProIrrigationException)
-async def pro_irrigation_exception_handler(request: Request, exc: ProIrrigationException):
-    """
-    Handler for custom Pro-Irrigation exceptions.
-    
-    Returns structured error responses with appropriate HTTP status codes.
-    """
-    logger.error(
-        f"Pro-Irrigation error: {exc.message}",
-        extra={"details": exc.details, "path": request.url.path}
-    )
-    
-    # Determine status code based on exception type
-    status_code = 500
-    if isinstance(exc, ValidationException):
-        status_code = 400
-    elif isinstance(exc, ConfigurationException):
-        status_code = 400
-    elif isinstance(exc, HomeAssistantException):
-        status_code = 502
-    elif isinstance(exc, DatabaseException):
-        status_code = 500
-    
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": exc.__class__.__name__,
-            "message": exc.message,
-            "details": exc.details
-        }
-    )
-
-
-@app.exception_handler(HomeAssistantAPIError)
-async def ha_api_error_handler(request: Request, exc: HomeAssistantAPIError):
-    """
-    Handler for Home Assistant API errors.
-    
-    Returns 502 Bad Gateway when Home Assistant communication fails.
-    """
-    logger.error(
-        f"Home Assistant API error: {str(exc)}",
-        extra={"path": request.url.path}
-    )
-    
-    return JSONResponse(
-        status_code=502,
-        content={
-            "error": "HomeAssistantAPIError",
-            "message": "Failed to communicate with Home Assistant",
-            "details": {"error": str(exc)}
-        }
-    )
-
-
-@app.exception_handler(SQLAlchemyError)
-async def database_error_handler(request: Request, exc: SQLAlchemyError):
-    """
-    Handler for SQLAlchemy database errors.
-    
-    Logs the error and returns a generic database error response.
-    """
-    logger.error(
-        f"Database error: {str(exc)}",
-        extra={"path": request.url.path},
-        exc_info=True
-    )
-    
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "DatabaseError",
-            "message": "A database error occurred",
-            "details": {"error": str(exc)}
-        }
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_error_handler(request: Request, exc: RequestValidationError):
-    """
-    Handler for Pydantic request validation errors.
-    
-    Returns detailed validation error information to help clients fix requests.
-    """
-    logger.warning(
-        f"Request validation error: {str(exc)}",
-        extra={"path": request.url.path, "errors": exc.errors()}
-    )
-    
-    return JSONResponse(
-        status_code=422,
-        content={
-            "error": "ValidationError",
-            "message": "Request validation failed",
-            "details": {"errors": exc.errors()}
-        }
-    )
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """
-    Handler for FastAPI HTTP exceptions.
-    
-    Logs the error and returns the exception's status code and detail.
-    """
-    log_level = logging.WARNING if exc.status_code < 500 else logging.ERROR
-    logger.log(
-        log_level,
-        f"HTTP {exc.status_code}: {exc.detail}",
-        extra={"path": request.url.path, "status_code": exc.status_code}
-    )
-    
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": "HTTPException",
-            "message": exc.detail,
-            "details": {}
-        }
-    )
-
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """
-    Global exception handler for unhandled errors.
-    
-    Logs the error with full traceback and returns a generic error response.
-    This is the last resort handler for unexpected errors.
-    """
-    logger.critical(
-        f"Unhandled exception: {str(exc)}",
-        extra={"path": request.url.path, "exception_type": type(exc).__name__},
-        exc_info=True
-    )
-    
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "InternalServerError",
-            "message": "An unexpected error occurred",
-            "details": {"error": str(exc), "type": type(exc).__name__}
-        }
-    )
-
-
-# ============================================================================
-# Root Endpoint
-# ============================================================================
-
-@app.get("/", tags=["System"])
-async def root():
-    """
-    Root endpoint.
-    
-    Returns basic API information.
+        dict: Status information about the system
     """
     return {
-        "name": "Pro-Irrigation Add-on API",
-        "version": "1.0.0",
-        "status": "running"
+        "status": "healthy",
+        "service": "room-based-irrigation",
+        "version": "2.0.0"
     }
 
 
-def signal_handler(signum, frame):
+@app.get("/api", tags=["System"])
+async def root():
     """
-    Signal handler for graceful shutdown.
+    API root endpoint with information.
     
-    Handles SIGINT (Ctrl+C) and SIGTERM signals to ensure proper cleanup
-    of scheduler and queue processor before exiting.
+    Returns:
+        dict: Welcome message and API documentation link
     """
-    signal_name = signal.Signals(signum).name
-    logger.info(f"Received signal {signal_name}, initiating graceful shutdown...")
-    
-    # The lifespan context manager will handle cleanup
-    # Just exit gracefully
-    sys.exit(0)
+    return {
+        "message": "Room-Based Irrigation System API",
+        "version": "2.0.0",
+        "docs": "/docs",
+        "health": "/health"
+    }
 
 
-if __name__ == "__main__":
-    import uvicorn
-    
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    logger.info("Signal handlers registered for graceful shutdown")
-    
-    # Run the application
-    # In production, this will be run by the run.sh script
-    try:
-        uvicorn.run(
-            "backend.main:app",
-            host="0.0.0.0",
-            port=8000,
-            reload=False,
-            log_level=log_level.lower()
-        )
-    except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt, shutting down...")
-    except Exception as e:
-        logger.error(f"Application error: {str(e)}", exc_info=True)
-        sys.exit(1)
+# Mount static files for frontend (serve from /app/frontend/dist)
+# This should be done last, after all API routes are registered
+frontend_dist_path = "/app/frontend/dist"
+if os.path.exists(frontend_dist_path):
+    app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="frontend")
+    print(f"Frontend static files mounted from {frontend_dist_path}")
+else:
+    print(f"Warning: Frontend dist directory not found at {frontend_dist_path}")

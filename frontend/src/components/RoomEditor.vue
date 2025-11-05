@@ -2,19 +2,19 @@
   <div v-if="show" class="modal-overlay" @click.self="handleCancel">
     <div class="modal-content">
       <div class="modal-header">
-        <h2>{{ isEditMode ? 'Edit Zone' : 'Create Zone' }}</h2>
+        <h2>{{ isEditMode ? 'Edit Room' : 'Create Room' }}</h2>
         <button @click="handleCancel" class="btn-close">&times;</button>
       </div>
       
       <div class="modal-body">
         <form @submit.prevent="handleSubmit">
           <div class="form-group">
-            <label for="zoneName">Zone Name *</label>
+            <label for="roomName">Room Name *</label>
             <input 
-              id="zoneName"
+              id="roomName"
               v-model="formData.name" 
               type="text" 
-              placeholder="e.g., Front Left"
+              placeholder="e.g., Grow Room 1"
               required
               class="form-input"
               :disabled="saving"
@@ -23,13 +23,34 @@
 
           <div class="form-group">
             <EntitySelector 
-              v-model="formData.switch_entity"
-              label="Switch Entity *"
-              placeholder="Select zone switch entity"
-              :filter="filterSwitchEntities"
+              v-model="formData.lights_on_entity"
+              label="Lights On Entity"
+              placeholder="Select lights on entity (optional)"
               :disabled="saving"
             />
-            <p class="field-hint">Home Assistant entity that controls the zone valve (e.g., switch.zone_1)</p>
+            <p class="field-hint">Entity that indicates when lights turn on (used for P1 event scheduling)</p>
+          </div>
+
+          <div class="form-group">
+            <EntitySelector 
+              v-model="formData.lights_off_entity"
+              label="Lights Off Entity"
+              placeholder="Select lights off entity (optional)"
+              :disabled="saving"
+            />
+            <p class="field-hint">Entity that indicates when lights turn off (used for P2 event scheduling)</p>
+          </div>
+
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input 
+                type="checkbox" 
+                v-model="formData.enabled"
+                :disabled="saving"
+              />
+              <span>Enable room</span>
+            </label>
+            <p class="field-hint">When enabled, scheduled water events will run automatically</p>
           </div>
 
           <div v-if="error" class="error-message">
@@ -50,7 +71,7 @@
               class="btn-primary"
               :disabled="saving || !isFormValid"
             >
-              {{ saving ? 'Saving...' : (isEditMode ? 'Update Zone' : 'Create Zone') }}
+              {{ saving ? 'Saving...' : (isEditMode ? 'Update Room' : 'Create Room') }}
             </button>
           </div>
         </form>
@@ -61,7 +82,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import api from '../services/api'
+import { useRoomsStore } from '../stores/rooms'
 import EntitySelector from './EntitySelector.vue'
 
 const props = defineProps({
@@ -69,46 +90,40 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
-  zone: {
+  room: {
     type: Object,
     default: null
-  },
-  pumpId: {
-    type: Number,
-    required: true
   }
 })
 
 const emit = defineEmits(['close', 'saved'])
 
+const roomsStore = useRoomsStore()
+
 const formData = ref({
   name: '',
-  switch_entity: ''
+  lights_on_entity: '',
+  lights_off_entity: '',
+  enabled: true
 })
 
 const saving = ref(false)
 const error = ref(null)
 
-const isEditMode = computed(() => props.zone !== null)
+const isEditMode = computed(() => props.room !== null)
 
 const isFormValid = computed(() => {
-  return formData.value.name.trim().length > 0 && 
-         formData.value.switch_entity.trim().length > 0
+  return formData.value.name.trim().length > 0
 })
 
-// Filter for switch entities
-function filterSwitchEntities(entity) {
-  const entityId = entity.entity_id.toLowerCase()
-  return entityId.startsWith('switch.') || 
-         entityId.startsWith('input_boolean.')
-}
-
-// Watch for zone prop changes to populate form
-watch(() => props.zone, (newZone) => {
-  if (newZone) {
+// Watch for room prop changes to populate form
+watch(() => props.room, (newRoom) => {
+  if (newRoom) {
     formData.value = {
-      name: newZone.name || '',
-      switch_entity: newZone.switch_entity || ''
+      name: newRoom.name || '',
+      lights_on_entity: newRoom.lights_on_entity || '',
+      lights_off_entity: newRoom.lights_off_entity || '',
+      enabled: newRoom.enabled !== undefined ? newRoom.enabled : true
     }
   } else {
     resetForm()
@@ -117,7 +132,7 @@ watch(() => props.zone, (newZone) => {
 
 // Watch for show prop to reset form when opening
 watch(() => props.show, (newShow) => {
-  if (newShow && !props.zone) {
+  if (newShow && !props.room) {
     resetForm()
   }
   error.value = null
@@ -126,7 +141,9 @@ watch(() => props.show, (newShow) => {
 function resetForm() {
   formData.value = {
     name: '',
-    switch_entity: ''
+    lights_on_entity: '',
+    lights_off_entity: '',
+    enabled: true
   }
 }
 
@@ -137,22 +154,25 @@ async function handleSubmit() {
   error.value = null
 
   try {
+    // Prepare data for API (convert empty strings to null)
     const submitData = {
       name: formData.value.name.trim(),
-      switch_entity: formData.value.switch_entity.trim()
+      lights_on_entity: formData.value.lights_on_entity || null,
+      lights_off_entity: formData.value.lights_off_entity || null,
+      enabled: formData.value.enabled
     }
 
     if (isEditMode.value) {
-      await api.updateZone(props.zone.id, submitData)
+      await roomsStore.updateRoom(props.room.id, submitData)
     } else {
-      await api.createZone(props.pumpId, submitData)
+      await roomsStore.createRoom(submitData)
     }
 
     emit('saved')
     emit('close')
   } catch (err) {
-    error.value = err.message || 'Failed to save zone'
-    console.error('Error saving zone:', err)
+    error.value = err.message || 'Failed to save room'
+    console.error('Error saving room:', err)
   } finally {
     saving.value = false
   }
@@ -253,6 +273,25 @@ function handleCancel() {
 
 .form-input:disabled {
   background-color: #f5f5f5;
+  cursor: not-allowed;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-weight: 500;
+  color: #2c3e50;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 1.25rem;
+  height: 1.25rem;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"]:disabled {
   cursor: not-allowed;
 }
 

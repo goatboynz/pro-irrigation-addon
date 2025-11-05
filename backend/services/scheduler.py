@@ -1,381 +1,420 @@
 """
-Scheduler Engine Service
+Event scheduler for v2 room-based irrigation system.
 
-This module implements the scheduler engine that evaluates zone schedules
-every 60 seconds and creates execution jobs for zones that are due to run.
+This module provides:
+- Background scheduler that runs every 60 seconds
+- P1 event calculation (lights-on + delay)
+- P2 event calculation (specific time of day)
+- Job creation and queue integration
 """
 
 import asyncio
 import logging
 from datetime import datetime, time, timedelta
-from typing import Dict, List, Optional, Any
-from queue import Queue
-from dataclasses import dataclass
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+from typing import Optional, List
 from sqlalchemy.orm import Session
 
-from ..models.database import SessionLocal
-from ..models.zone import Zone
-from ..models.global_settings import GlobalSettings
-from .ha_client import HomeAssistantClient
-from .calculator import (
-    GlobalTimingSettings,
-    calculate_auto_schedule,
-    parse_manual_schedule,
-    ScheduleCalculationError,
-    ManualScheduleParseError
-)
-
+from backend.models.database import SessionLocal
+from backend.models.v2_room import Room
+from backend.models.v2_water_event import WaterEvent
+from backend.models.v2_zone import ZoneV2
+from backend.services.ha_client import HomeAssistantClient, get_ha_client
+from backend.services.queue_processor import ExecutionJob, get_queue_processor
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ExecutionJob:
+class EventScheduler:
     """
-    Represents an execution job for a zone.
+    Scheduler that evaluates water events and creates execution jobs.
     
-    This data structure is added to pump queues and contains all information
-    needed to execute an irrigation event.
-    """
-    zone_id: int
-    zone_name: str
-    switch_entity: str
-    duration_seconds: int
-    scheduled_time: datetime
-    created_at: datetime
-
-
-class SchedulerEngine:
-    """
-    Scheduler engine that evaluates zone schedules and creates execution jobs.
-    
-    The scheduler runs every 60 seconds, loads all enabled zones, retrieves
-    global settings from Home Assistant, calculates scheduled times, and
-    creates execution jobs for zones that are due to run.
+    The scheduler runs every 60 seconds and:
+    1. Loads all enabled rooms and their events
+    2. Calculates when each event should run
+    3. Creates execution jobs for events that match the current time
+    4. Adds jobs to the appropriate pump queues
     """
     
-    def __init__(self, ha_client: HomeAssistantClient, pump_queues: Dict[int, Queue]):
+    def __init__(self, ha_client: Optional[HomeAssistantClient] = None):
         """
-        Initialize the scheduler engine.
+        Initialize the event scheduler.
         
         Args:
-            ha_client: Home Assistant API client for retrieving global settings
-            pump_queues: Dictionary mapping pump_id to Queue for job execution
+            ha_client: Optional HomeAssistantClient instance (uses singleton if not provided)
         """
-        self.ha_client = ha_client
-        self.pump_queues = pump_queues
-        self.scheduler = AsyncIOScheduler()
-        self.is_running = False
+        self.ha_client = ha_client or get_ha_client()
+        self.queue_processor = get_queue_processor()
         
-        logger.info("Scheduler engine initialized")
+        # Background task handle
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+        
+        logger.info("EventScheduler initialized")
     
-    def start(self):
-        """Start the scheduler engine."""
-        if self.is_running:
-            logger.warning("Scheduler engine is already running")
+    async def start(self) -> None:
+        """
+        Start the background scheduler task.
+        
+        The scheduler will run every 60 seconds until stopped.
+        """
+        if self._running:
+            logger.warning("Scheduler already running")
             return
         
-        # Add the scheduler tick job with 60-second interval
-        self.scheduler.add_job(
-            self.scheduler_tick,
-            trigger=IntervalTrigger(seconds=60),
-            id='scheduler_tick',
-            name='Scheduler Tick',
-            replace_existing=True
-        )
-        
-        self.scheduler.start()
-        self.is_running = True
-        logger.info("Scheduler engine started")
+        self._running = True
+        self._task = asyncio.create_task(self._scheduler_loop())
+        logger.info("Event scheduler started")
     
-    def stop(self):
-        """Stop the scheduler engine."""
-        if not self.is_running:
-            logger.warning("Scheduler engine is not running")
+    async def stop(self) -> None:
+        """
+        Stop the background scheduler task.
+        """
+        if not self._running:
             return
         
-        self.scheduler.shutdown(wait=True)
-        self.is_running = False
-        logger.info("Scheduler engine stopped")
-    
-    async def scheduler_tick(self):
-        """
-        Main scheduler tick function that runs every 60 seconds.
-        
-        This function:
-        1. Loads all enabled zones from the database
-        2. Retrieves global settings from Home Assistant
-        3. Calculates scheduled times for each zone
-        4. Creates execution jobs for zones that are due to run
-        """
-        logger.debug("Scheduler tick started")
-        
-        try:
-            # Get database session
-            db = SessionLocal()
-            
+        self._running = False
+        if self._task:
+            self._task.cancel()
             try:
-                # Load all enabled zones from database
-                zones = db.query(Zone).filter(Zone.enabled == True).all()
-                logger.debug(f"Loaded {len(zones)} enabled zones")
-                
-                if not zones:
-                    logger.debug("No enabled zones found, skipping tick")
-                    return
-                
-                # Retrieve global settings from Home Assistant
-                global_settings = await self._load_global_settings(db)
-                
-                if global_settings is None:
-                    logger.warning("Could not load global settings, skipping tick")
-                    return
-                
-                # Get current time for matching
-                current_time = datetime.now()
-                
-                # Process each zone
-                for zone in zones:
-                    try:
-                        await self._process_zone(zone, global_settings, current_time)
-                    except Exception as e:
-                        logger.error(f"Error processing zone {zone.id} ({zone.name}): {str(e)}")
-                        # Continue processing other zones
-                        continue
-                
-                logger.debug("Scheduler tick completed")
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        
+        logger.info("Event scheduler stopped")
+    
+    async def _scheduler_loop(self) -> None:
+        """
+        Main scheduler loop that runs every 60 seconds.
+        
+        Evaluates all events and creates jobs for those that should run now.
+        """
+        logger.info("Scheduler loop started")
+        
+        while self._running:
+            try:
+                await self._evaluate_events()
+            except Exception as e:
+                logger.error(f"Error in scheduler loop: {e}", exc_info=True)
             
-            finally:
-                db.close()
+            # Wait 60 seconds before next iteration
+            await asyncio.sleep(60)
+        
+        logger.info("Scheduler loop stopped")
+
+    async def _evaluate_events(self) -> None:
+        """
+        Evaluate all enabled events and create jobs for those that should run now.
+        
+        This method:
+        1. Loads all enabled rooms from the database
+        2. For each room, loads all enabled water events
+        3. Calculates when each event should run
+        4. Creates execution jobs for events matching current time (within 60s window)
+        5. Adds jobs to pump queues
+        """
+        current_time = datetime.now()
+        logger.info(f"[SCHEDULER] Evaluating events at {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Get database session
+        db = SessionLocal()
+        try:
+            # Load all enabled rooms
+            rooms = db.query(Room).filter(Room.enabled == True).all()
+            logger.debug(f"Found {len(rooms)} enabled rooms")
+            
+            if not rooms:
+                logger.debug("No enabled rooms found, skipping evaluation")
+                return
+            
+            # Process each room
+            for room in rooms:
+                try:
+                    await self._evaluate_room_events(db, room, current_time)
+                except Exception as e:
+                    logger.error(
+                        f"Error evaluating events for room {room.id} ({room.name}): {e}",
+                        exc_info=True
+                    )
         
         except Exception as e:
-            logger.error(f"Error in scheduler tick: {str(e)}", exc_info=True)
+            logger.error(f"Error loading rooms from database: {e}", exc_info=True)
+        
+        finally:
+            db.close()
     
-    async def _load_global_settings(self, db: Session) -> Optional[GlobalTimingSettings]:
+    async def _evaluate_room_events(self, db: Session, room: Room, current_time: datetime) -> None:
         """
-        Load global settings from database and retrieve values from Home Assistant.
+        Evaluate all events for a specific room.
         
         Args:
             db: Database session
-        
-        Returns:
-            GlobalTimingSettings object or None if settings cannot be loaded
+            room: Room model instance
+            current_time: Current datetime for comparison
         """
-        try:
-            # Get global settings from database
-            settings = db.query(GlobalSettings).first()
-            
-            if not settings:
-                logger.warning("No global settings found in database")
-                return None
-            
-            # Check if all required entities are configured
-            if not all([
-                settings.lights_on_entity,
-                settings.lights_off_entity,
-                settings.p1_delay_entity,
-                settings.p2_delay_entity,
-                settings.p2_buffer_entity
-            ]):
-                logger.warning("Global settings are incomplete, some entities not configured")
-                return None
-            
-            # Retrieve entity states from Home Assistant
-            lights_on_state = await self.ha_client.get_state(settings.lights_on_entity)
-            lights_off_state = await self.ha_client.get_state(settings.lights_off_entity)
-            p1_delay_state = await self.ha_client.get_state(settings.p1_delay_entity)
-            p2_delay_state = await self.ha_client.get_state(settings.p2_delay_entity)
-            p2_buffer_state = await self.ha_client.get_state(settings.p2_buffer_entity)
-            
-            # Parse time values from input_datetime entities
-            # Format is typically "HH:MM:SS" or "HH:MM"
-            lights_on_time = self._parse_time(lights_on_state.state)
-            lights_off_time = self._parse_time(lights_off_state.state)
-            
-            # Parse numeric values from input_number entities
-            p1_delay_minutes = int(float(p1_delay_state.state))
-            p2_delay_minutes = int(float(p2_delay_state.state))
-            p2_buffer_minutes = int(float(p2_buffer_state.state))
-            
-            global_timing = GlobalTimingSettings(
-                lights_on_time=lights_on_time,
-                lights_off_time=lights_off_time,
-                p1_start_delay_minutes=p1_delay_minutes,
-                p2_start_delay_minutes=p2_delay_minutes,
-                p2_end_buffer_minutes=p2_buffer_minutes
-            )
-            
-            logger.debug(
-                f"Loaded global settings: lights_on={lights_on_time}, "
-                f"lights_off={lights_off_time}, p1_delay={p1_delay_minutes}min, "
-                f"p2_delay={p2_delay_minutes}min, p2_buffer={p2_buffer_minutes}min"
-            )
-            
-            return global_timing
+        logger.debug(f"Evaluating events for room {room.id} ({room.name})")
         
-        except Exception as e:
-            logger.error(f"Error loading global settings: {str(e)}")
-            return None
-    
-    def _parse_time(self, time_str: str) -> time:
-        """
-        Parse time string from Home Assistant input_datetime entity.
+        # Load all enabled water events for this room
+        events = db.query(WaterEvent).filter(
+            WaterEvent.room_id == room.id,
+            WaterEvent.enabled == True
+        ).all()
         
-        Args:
-            time_str: Time string in format "HH:MM:SS" or "HH:MM"
+        if not events:
+            logger.debug(f"No enabled events for room {room.id}")
+            return
         
-        Returns:
-            time object
+        logger.debug(f"Found {len(events)} enabled events for room {room.id}")
         
-        Raises:
-            ValueError: If time string cannot be parsed
-        """
-        try:
-            # Try parsing with seconds
-            if time_str.count(':') == 2:
-                dt = datetime.strptime(time_str, "%H:%M:%S")
-            else:
-                dt = datetime.strptime(time_str, "%H:%M")
-            
-            return dt.time()
-        
-        except ValueError as e:
-            logger.error(f"Failed to parse time string '{time_str}': {str(e)}")
-            raise
-    
-    async def _process_zone(
-        self,
-        zone: Zone,
-        global_settings: GlobalTimingSettings,
-        current_time: datetime
-    ):
-        """
-        Process a single zone to check if it should run now.
-        
-        Calculates scheduled times for the zone and creates execution jobs
-        for events that match the current time (within 60-second window).
-        
-        Args:
-            zone: Zone object to process
-            global_settings: Global timing settings
-            current_time: Current datetime for matching
-        """
-        try:
-            # Calculate scheduled times based on zone mode
-            scheduled_events = []
-            
-            if zone.mode == 'auto':
-                # Build zone config for auto mode calculation
-                zone_config = {
-                    'p1_duration_sec': zone.p1_duration_sec or 0,
-                    'p2_event_count': zone.p2_event_count or 0,
-                    'p2_duration_sec': zone.p2_duration_sec or 0
-                }
-                
-                scheduled_events = calculate_auto_schedule(
-                    zone_config,
-                    global_settings,
-                    current_time
-                )
-            
-            elif zone.mode == 'manual':
-                # Parse manual schedules for P1 and P2
-                p1_events = parse_manual_schedule(
-                    zone.p1_manual_list,
-                    'P1',
-                    current_time
-                )
-                p2_events = parse_manual_schedule(
-                    zone.p2_manual_list,
-                    'P2',
-                    current_time
+        # Process each event
+        for event in events:
+            try:
+                # Calculate when this event should run
+                should_run, scheduled_time = await self._should_event_run(
+                    room, event, current_time
                 )
                 
-                scheduled_events = p1_events + p2_events
-                scheduled_events.sort(key=lambda e: e.time)
-            
-            else:
-                logger.warning(f"Unknown mode '{zone.mode}' for zone {zone.id} ({zone.name})")
-                return
-            
-            # Check if any events match current time (within 60-second window)
-            for event in scheduled_events:
-                if self._is_time_match(event.time, current_time):
-                    # Create execution job
-                    job = ExecutionJob(
-                        zone_id=zone.id,
-                        zone_name=zone.name,
-                        switch_entity=zone.switch_entity,
-                        duration_seconds=event.duration_seconds,
-                        scheduled_time=event.time,
-                        created_at=current_time
-                    )
-                    
-                    # Add job to appropriate pump queue
-                    self._add_job_to_queue(zone.pump_id, job)
-                    
+                if should_run:
                     logger.info(
-                        f"Created execution job for zone {zone.id} ({zone.name}) "
-                        f"on pump {zone.pump_id}, duration={event.duration_seconds}s"
+                        f"Event {event.id} ({event.name}) should run now. "
+                        f"Scheduled: {scheduled_time.strftime('%H:%M:%S')}"
                     )
-        
-        except (ScheduleCalculationError, ManualScheduleParseError) as e:
-            logger.error(f"Error calculating schedule for zone {zone.id} ({zone.name}): {str(e)}")
-        except Exception as e:
-            logger.error(
-                f"Unexpected error processing zone {zone.id} ({zone.name}): {str(e)}",
-                exc_info=True
-            )
-    
-    def _is_time_match(self, scheduled_time: datetime, current_time: datetime) -> bool:
+                    await self._create_jobs_for_event(db, event, scheduled_time)
+                else:
+                    logger.debug(
+                        f"Event {event.id} ({event.name}) not due. "
+                        f"Next run: {scheduled_time.strftime('%H:%M:%S') if scheduled_time else 'N/A'}"
+                    )
+            
+            except Exception as e:
+                logger.error(
+                    f"Error evaluating event {event.id} ({event.name}): {e}",
+                    exc_info=True
+                )
+
+    async def _should_event_run(
+        self, room: Room, event: WaterEvent, current_time: datetime
+    ) -> tuple[bool, Optional[datetime]]:
         """
-        Check if scheduled time matches current time within 60-second window.
-        
-        The scheduler runs every 60 seconds, so we need to match events that
-        are scheduled within the current minute.
+        Determine if an event should run at the current time.
         
         Args:
-            scheduled_time: The scheduled event time
-            current_time: The current time
+            room: Room model instance
+            event: WaterEvent model instance
+            current_time: Current datetime
         
         Returns:
-            True if times match within 60-second window, False otherwise
+            Tuple of (should_run, scheduled_time)
+            - should_run: True if event should execute now
+            - scheduled_time: When the event is scheduled (for logging)
         """
-        # Calculate time difference in seconds
-        time_diff = abs((scheduled_time - current_time).total_seconds())
-        
-        # Match if within 60-second window (30 seconds before or after)
-        # This accounts for scheduler timing variations
-        is_match = time_diff <= 30
-        
-        if is_match:
-            logger.debug(
-                f"Time match: scheduled={scheduled_time}, current={current_time}, "
-                f"diff={time_diff:.1f}s"
-            )
-        
-        return is_match
+        if event.event_type == "p1":
+            return await self._calculate_p1_event(room, event, current_time)
+        elif event.event_type == "p2":
+            return await self._calculate_p2_event(room, event, current_time)
+        else:
+            logger.error(f"Unknown event type '{event.event_type}' for event {event.id}")
+            return False, None
     
-    def _add_job_to_queue(self, pump_id: int, job: ExecutionJob):
+    async def _calculate_p1_event(
+        self, room: Room, event: WaterEvent, current_time: datetime
+    ) -> tuple[bool, Optional[datetime]]:
         """
-        Add an execution job to the appropriate pump queue.
+        Calculate if a P1 event should run.
+        
+        P1 events run at lights_on_time + delay_minutes.
         
         Args:
-            pump_id: ID of the pump that controls this zone
-            job: ExecutionJob to add to the queue
+            room: Room model instance
+            event: WaterEvent model instance (must be P1 type)
+            current_time: Current datetime
+        
+        Returns:
+            Tuple of (should_run, scheduled_time)
         """
-        # Get or create queue for this pump
-        if pump_id not in self.pump_queues:
-            self.pump_queues[pump_id] = Queue()
-            logger.info(f"Created new queue for pump {pump_id}")
+        try:
+            # Validate P1 event has required fields
+            if event.delay_minutes is None:
+                logger.error(f"P1 event {event.id} missing delay_minutes")
+                return False, None
+            
+            # Get lights_on_entity value from Home Assistant
+            if not room.lights_on_entity:
+                logger.error(f"Room {room.id} missing lights_on_entity")
+                return False, None
+            
+            try:
+                lights_on_state = await self.ha_client.get_state(room.lights_on_entity)
+                lights_on_value = lights_on_state.state
+                logger.debug(f"Room {room.id} lights_on_entity value: {lights_on_value}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to get lights_on_entity '{room.lights_on_entity}' for room {room.id}: {e}"
+                )
+                return False, None
+            
+            # Parse lights_on time (format: HH:MM:SS or HH:MM)
+            try:
+                lights_on_time = datetime.strptime(lights_on_value, "%H:%M:%S").time()
+            except ValueError:
+                try:
+                    lights_on_time = datetime.strptime(lights_on_value, "%H:%M").time()
+                except ValueError:
+                    logger.error(
+                        f"Invalid lights_on time format '{lights_on_value}' for room {room.id}"
+                    )
+                    return False, None
+            
+            # Calculate scheduled time: lights_on + delay_minutes
+            scheduled_datetime = datetime.combine(current_time.date(), lights_on_time)
+            scheduled_datetime += timedelta(minutes=event.delay_minutes)
+            
+            # Check if current time matches (within 60s window)
+            time_diff = abs((current_time - scheduled_datetime).total_seconds())
+            should_run = time_diff < 60
+            
+            logger.debug(
+                f"P1 event {event.id}: lights_on={lights_on_time}, "
+                f"delay={event.delay_minutes}min, scheduled={scheduled_datetime.strftime('%H:%M:%S')}, "
+                f"diff={time_diff:.0f}s, should_run={should_run}"
+            )
+            
+            return should_run, scheduled_datetime
         
-        # Add job to queue
-        queue = self.pump_queues[pump_id]
-        queue.put(job)
+        except Exception as e:
+            logger.error(f"Error calculating P1 event {event.id}: {e}", exc_info=True)
+            return False, None
+    
+    async def _calculate_p2_event(
+        self, room: Room, event: WaterEvent, current_time: datetime
+    ) -> tuple[bool, Optional[datetime]]:
+        """
+        Calculate if a P2 event should run.
         
-        logger.debug(
-            f"Added job to pump {pump_id} queue: zone={job.zone_name}, "
-            f"duration={job.duration_seconds}s, queue_size={queue.qsize()}"
+        P2 events run at a specific time_of_day (HH:MM format).
+        
+        Args:
+            room: Room model instance
+            event: WaterEvent model instance (must be P2 type)
+            current_time: Current datetime
+        
+        Returns:
+            Tuple of (should_run, scheduled_time)
+        """
+        try:
+            # Validate P2 event has required fields
+            if not event.time_of_day:
+                logger.error(f"P2 event {event.id} missing time_of_day")
+                return False, None
+            
+            # Parse time_of_day (format: HH:MM)
+            try:
+                scheduled_time = datetime.strptime(event.time_of_day, "%H:%M").time()
+            except ValueError:
+                logger.error(
+                    f"Invalid time_of_day format '{event.time_of_day}' for event {event.id}"
+                )
+                return False, None
+            
+            # Create scheduled datetime for today
+            scheduled_datetime = datetime.combine(current_time.date(), scheduled_time)
+            
+            # Check if current time matches (within 60s window)
+            time_diff = abs((current_time - scheduled_datetime).total_seconds())
+            should_run = time_diff < 60
+            
+            logger.debug(
+                f"P2 event {event.id}: time_of_day={event.time_of_day}, "
+                f"scheduled={scheduled_datetime.strftime('%H:%M:%S')}, "
+                f"diff={time_diff:.0f}s, should_run={should_run}"
+            )
+            
+            return should_run, scheduled_datetime
+        
+        except Exception as e:
+            logger.error(f"Error calculating P2 event {event.id}: {e}", exc_info=True)
+            return False, None
+
+    async def _create_jobs_for_event(
+        self, db: Session, event: WaterEvent, scheduled_time: datetime
+    ) -> None:
+        """
+        Create execution jobs for all zones assigned to an event.
+        
+        For each zone assigned to the event:
+        1. Create an ExecutionJob with zone details
+        2. Add the job to the zone's pump queue
+        
+        Args:
+            db: Database session
+            event: WaterEvent model instance
+            scheduled_time: When the event was scheduled to run
+        """
+        # Load zones for this event (with eager loading of pump relationship)
+        zones = event.zones
+        
+        if not zones:
+            logger.warning(f"Event {event.id} ({event.name}) has no zones assigned")
+            return
+        
+        logger.info(
+            f"Creating jobs for event {event.id} ({event.name}): "
+            f"{len(zones)} zones, duration={event.run_time_seconds}s"
         )
+        
+        # Create a job for each zone
+        for zone in zones:
+            try:
+                # Skip disabled zones
+                if not zone.enabled:
+                    logger.debug(f"Skipping disabled zone {zone.id} ({zone.name})")
+                    continue
+                
+                # Get pump for this zone
+                pump = zone.pump
+                if not pump:
+                    logger.error(f"Zone {zone.id} has no associated pump")
+                    continue
+                
+                if not pump.enabled:
+                    logger.debug(f"Skipping zone {zone.id} - pump {pump.id} is disabled")
+                    continue
+                
+                # Create execution job
+                job = ExecutionJob(
+                    zone_id=zone.id,
+                    zone_name=zone.name,
+                    switch_entity=zone.switch_entity,
+                    duration_seconds=event.run_time_seconds,
+                    scheduled_time=scheduled_time
+                )
+                
+                # Add job to pump queue
+                self.queue_processor.add_job(pump.id, job)
+                
+                logger.info(
+                    f"Created job for zone {zone.id} ({zone.name}) on pump {pump.id} ({pump.name}): "
+                    f"duration={event.run_time_seconds}s"
+                )
+            
+            except Exception as e:
+                logger.error(
+                    f"Error creating job for zone {zone.id}: {e}",
+                    exc_info=True
+                )
+
+
+# Singleton instance
+_scheduler_instance: Optional[EventScheduler] = None
+
+
+def get_scheduler() -> EventScheduler:
+    """
+    Get the singleton scheduler instance.
+    
+    Returns:
+        EventScheduler instance
+    """
+    global _scheduler_instance
+    if _scheduler_instance is None:
+        _scheduler_instance = EventScheduler()
+    return _scheduler_instance

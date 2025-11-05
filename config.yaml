@@ -1,7 +1,7 @@
-name: Pro-Irrigation
-version: 1.0.0
-slug: pro-irrigation
-description: Professional irrigation management system with pump and zone control
+name: Pro-Irrigation v2
+version: 2.0.0
+slug: pro-irrigation-v2
+description: Room-based irrigation management system with environmental monitoring
 url: https://github.com/goatboynz/pro-irrigation-addon
 arch:
   - aarch64

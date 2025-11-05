@@ -1,403 +1,474 @@
 """
-Pump Queue Processor Service
+Pump queue processor for v2 room-based irrigation system.
 
-This module implements the queue processor that executes irrigation jobs
-from pump queues. It runs every 1 second, checks pump lock status, and
-executes jobs in FIFO order while respecting pump locks.
+This module provides:
+- In-memory queue management per pump
+- Job execution logic with pump lock coordination
+- Background processing task that runs every 1 second
 """
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Optional, Any
-from queue import Queue, Empty
+from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from datetime import datetime
+from collections import defaultdict
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy.orm import Session
-
-from ..models.database import SessionLocal
-from ..models.pump import Pump
-from .ha_client import HomeAssistantClient, HomeAssistantAPIError
-from .scheduler import ExecutionJob
-
+from backend.services.ha_client import HomeAssistantClient, get_ha_client
+from backend.models.database import SessionLocal
+from backend.models.v2_pump import PumpV2
+from backend.models.v2_settings import SystemSettings
 
 logger = logging.getLogger(__name__)
 
 
-class QueueProcessor:
+@dataclass
+class ExecutionJob:
     """
-    Queue processor that executes irrigation jobs from pump queues.
+    Represents a job to execute a zone irrigation.
     
-    The processor runs every 1 second, checks each pump's lock status,
-    and executes jobs from the queue when the pump is idle. It implements
-    safety mechanisms including pump locking and timeout handling.
+    Attributes:
+        zone_id: Database ID of the zone
+        zone_name: Name of the zone (for logging)
+        switch_entity: HA switch entity to control
+        duration_seconds: How long to run the zone
+        scheduled_time: When this job was scheduled
+        created_at: When this job was created
+    """
+    zone_id: int
+    zone_name: str
+    switch_entity: str
+    duration_seconds: int
+    scheduled_time: datetime
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<ExecutionJob(zone='{self.zone_name}', duration={self.duration_seconds}s)>"
+
+
+class PumpQueueProcessor:
+    """
+    Manages and processes execution queues for all pumps.
+    
+    Each pump has its own FIFO queue. The processor checks all queues
+    every second and executes jobs when pumps are idle.
     """
     
-    def __init__(self, ha_client: HomeAssistantClient, pump_queues: Dict[int, Queue]):
+    def __init__(self, ha_client: Optional[HomeAssistantClient] = None):
         """
         Initialize the queue processor.
         
         Args:
-            ha_client: Home Assistant API client for controlling switches and locks
-            pump_queues: Dictionary mapping pump_id to Queue for job execution
+            ha_client: Optional HomeAssistantClient instance (uses singleton if not provided)
         """
-        self.ha_client = ha_client
-        self.pump_queues = pump_queues
-        self.scheduler = AsyncIOScheduler()
-        self.is_running = False
+        self.ha_client = ha_client or get_ha_client()
         
-        # Track active jobs and lock times for timeout detection
-        self.active_jobs: Dict[int, ExecutionJob] = {}  # pump_id -> ExecutionJob
-        self.lock_start_times: Dict[int, datetime] = {}  # pump_id -> lock start time
+        # In-memory queues: pump_id -> List[ExecutionJob]
+        self.queues: Dict[int, List[ExecutionJob]] = defaultdict(list)
         
-        # Timeout configuration (5 minutes)
-        self.lock_timeout_seconds = 300
+        # Track currently executing jobs: pump_id -> ExecutionJob
+        self.executing: Dict[int, Optional[ExecutionJob]] = {}
         
-        # Status cache for performance (1-second cache)
-        self._status_cache: Dict[int, Dict[str, Any]] = {}  # pump_id -> status dict
-        self._status_cache_time: Dict[int, datetime] = {}  # pump_id -> cache timestamp
-        self._cache_ttl_seconds = 1  # 1-second cache TTL
+        # Background task handle
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
         
-        logger.info("Queue processor initialized")
+        logger.info("PumpQueueProcessor initialized")
     
-    def start(self):
-        """Start the queue processor."""
-        if self.is_running:
-            logger.warning("Queue processor is already running")
+    def add_job(self, pump_id: int, job: ExecutionJob) -> None:
+        """
+        Add a job to a pump's queue.
+        
+        Args:
+            pump_id: Database ID of the pump
+            job: ExecutionJob to add to the queue
+        """
+        try:
+            self.queues[pump_id].append(job)
+            queue_length = len(self.queues[pump_id])
+            logger.info(
+                f"Added job to pump {pump_id} queue: {job}. "
+                f"Queue length: {queue_length}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to add job to pump {pump_id} queue: {e}", exc_info=True)
+    
+    def get_queue_length(self, pump_id: int) -> int:
+        """
+        Get the number of jobs in a pump's queue.
+        
+        Args:
+            pump_id: Database ID of the pump
+        
+        Returns:
+            Number of jobs in the queue
+        """
+        return len(self.queues.get(pump_id, []))
+    
+    def get_executing_job(self, pump_id: int) -> Optional[ExecutionJob]:
+        """
+        Get the currently executing job for a pump.
+        
+        Args:
+            pump_id: Database ID of the pump
+        
+        Returns:
+            ExecutionJob if pump is executing, None if idle
+        """
+        return self.executing.get(pump_id)
+    
+    def clear_queue(self, pump_id: int) -> int:
+        """
+        Clear all jobs from a pump's queue.
+        
+        Args:
+            pump_id: Database ID of the pump
+        
+        Returns:
+            Number of jobs that were cleared
+        """
+        count = len(self.queues.get(pump_id, []))
+        self.queues[pump_id] = []
+        logger.info(f"Cleared {count} jobs from pump {pump_id} queue")
+        return count
+    
+    async def start(self) -> None:
+        """
+        Start the background queue processor task.
+        
+        The processor will run every 1 second until stopped.
+        """
+        if self._running:
+            logger.warning("Queue processor already running")
             return
         
-        # Add the processor tick job with 1-second interval
-        self.scheduler.add_job(
-            self.processor_tick,
-            trigger=IntervalTrigger(seconds=1),
-            id='processor_tick',
-            name='Queue Processor Tick',
-            replace_existing=True
-        )
-        
-        self.scheduler.start()
-        self.is_running = True
+        self._running = True
+        self._task = asyncio.create_task(self._process_loop())
         logger.info("Queue processor started")
     
-    def stop(self):
-        """Stop the queue processor."""
-        if not self.is_running:
-            logger.warning("Queue processor is not running")
+    async def stop(self) -> None:
+        """
+        Stop the background queue processor task.
+        """
+        if not self._running:
             return
         
-        self.scheduler.shutdown(wait=True)
-        self.is_running = False
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        
         logger.info("Queue processor stopped")
     
-    async def processor_tick(self):
+    async def _process_loop(self) -> None:
         """
-        Main processor tick function that runs every 1 second.
+        Main processing loop that runs every 1 second.
         
-        This function:
-        1. Loads all pumps from the database
-        2. Checks each pump's lock status via Home Assistant
-        3. Executes jobs from the queue when pump is idle
-        4. Handles timeout for stuck locks
+        Checks all pump queues and executes jobs when pumps are idle.
         """
-        logger.debug("Processor tick started")
+        logger.info("Queue processor loop started")
         
-        try:
-            # Get database session
-            db = SessionLocal()
-            
+        while self._running:
             try:
-                # Load all pumps from database
-                pumps = db.query(Pump).all()
-                
-                if not pumps:
-                    logger.debug("No pumps found, skipping tick")
-                    return
-                
-                # Process each pump
-                for pump in pumps:
-                    try:
-                        await self._process_pump(pump)
-                    except Exception as e:
-                        logger.error(f"Error processing pump {pump.id} ({pump.name}): {str(e)}")
-                        # Continue processing other pumps
-                        continue
-                
-                logger.debug("Processor tick completed")
+                await self._process_all_queues()
+            except Exception as e:
+                logger.error(f"Error in queue processor loop: {e}", exc_info=True)
             
-            finally:
-                db.close()
+            # Wait 1 second before next iteration
+            await asyncio.sleep(1)
+        
+        logger.info("Queue processor loop stopped")
+    
+    async def _process_all_queues(self) -> None:
+        """
+        Process all pump queues once.
+        
+        For each pump with a non-empty queue, check if it's idle
+        and execute the first job if so.
+        """
+        # Get all pumps from database
+        db = SessionLocal()
+        try:
+            pumps = db.query(PumpV2).filter(PumpV2.enabled == True).all()
+            logger.debug(f"Processing queues for {len(pumps)} enabled pumps")
+            
+            for pump in pumps:
+                try:
+                    # Skip if no jobs in queue
+                    if pump.id not in self.queues or not self.queues[pump.id]:
+                        continue
+                    
+                    queue_length = len(self.queues[pump.id])
+                    logger.debug(f"Pump {pump.id} ({pump.name}) has {queue_length} jobs in queue")
+                    
+                    # Skip if pump is currently executing a job
+                    if pump.id in self.executing and self.executing[pump.id] is not None:
+                        logger.debug(f"Pump {pump.id} is currently executing a job, skipping")
+                        continue
+                    
+                    # Check if pump lock is idle
+                    try:
+                        is_idle = await self.ha_client.is_entity_off(pump.lock_entity)
+                        logger.debug(f"Pump {pump.id} lock state: {'idle' if is_idle else 'busy'}")
+                        
+                        if is_idle:
+                            # Execute first job in queue
+                            job = self.queues[pump.id].pop(0)
+                            logger.info(
+                                f"Starting job execution for pump {pump.id} ({pump.name}): "
+                                f"zone='{job.zone_name}', duration={job.duration_seconds}s, "
+                                f"remaining_queue={len(self.queues[pump.id])}"
+                            )
+                            
+                            # Mark as executing
+                            self.executing[pump.id] = job
+                            
+                            # Execute job in background (don't await)
+                            asyncio.create_task(self._execute_job(pump, job))
+                        else:
+                            logger.debug(f"Pump {pump.id} is busy, waiting for it to become idle")
+                    
+                    except ValueError as e:
+                        # Entity not found
+                        logger.error(
+                            f"Pump {pump.id} lock entity '{pump.lock_entity}' not found in HA: {e}. "
+                            f"Skipping pump."
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Error checking pump {pump.id} lock state: {e}. "
+                            f"Will retry on next cycle.",
+                            exc_info=True
+                        )
+                
+                except Exception as e:
+                    logger.error(
+                        f"Error processing pump {pump.id}: {e}. "
+                        f"Continuing with next pump.",
+                        exc_info=True
+                    )
         
         except Exception as e:
-            logger.error(f"Error in processor tick: {str(e)}", exc_info=True)
-
-    async def _process_pump(self, pump: Pump):
-        """
-        Process a single pump's queue.
+            logger.error(f"Error loading pumps from database: {e}", exc_info=True)
         
-        Checks the pump's lock status and executes the next job if the pump
-        is idle and the queue is not empty.
-        
-        Args:
-            pump: Pump object to process
-        """
-        pump_id = pump.id
-        
-        # Get or create queue for this pump
-        if pump_id not in self.pump_queues:
-            self.pump_queues[pump_id] = Queue()
-            logger.debug(f"Created new queue for pump {pump_id}")
-        
-        queue = self.pump_queues[pump_id]
-        
-        # Check if pump has an active job
-        if pump_id in self.active_jobs:
-            # Check for timeout
-            await self._check_lock_timeout(pump)
-            return
-        
-        # Check if queue is empty
-        if queue.empty():
-            logger.debug(f"Queue for pump {pump_id} ({pump.name}) is empty")
-            return
-        
-        # Check pump lock status
-        try:
-            lock_state = await self.ha_client.get_state(pump.lock_entity)
-            is_locked = lock_state.state.lower() in ['on', 'true', 'locked']
-            
-            if is_locked:
-                logger.debug(f"Pump {pump_id} ({pump.name}) is locked, waiting")
-                return
-            
-            # Pump is idle and queue has jobs - execute next job
-            try:
-                job = queue.get_nowait()
-                await self._execute_job(pump, job)
-            except Empty:
-                # Queue became empty between check and get
-                logger.debug(f"Queue for pump {pump_id} became empty")
-                return
-        
-        except HomeAssistantAPIError as e:
-            logger.error(f"Failed to check lock status for pump {pump_id}: {str(e)}")
-            return
+        finally:
+            db.close()
     
-    async def _check_lock_timeout(self, pump: Pump):
+    async def _execute_job(self, pump: PumpV2, job: ExecutionJob) -> None:
         """
-        Check if a pump lock has timed out and force unlock if necessary.
+        Execute a single irrigation job.
         
-        If a pump has been locked for more than the timeout period (5 minutes),
-        this function will force unlock the pump and clear the active job.
+        Execution sequence:
+        1. Turn on pump lock
+        2. Wait for pump startup delay (from settings)
+        3. Turn on zone switch
+        4. Wait for job duration
+        5. Turn off zone switch
+        6. Wait for zone switch delay (from settings)
+        7. Turn off pump lock
+        8. Mark job as complete
         
         Args:
-            pump: Pump object to check
-        """
-        pump_id = pump.id
-        
-        if pump_id not in self.lock_start_times:
-            return
-        
-        lock_start = self.lock_start_times[pump_id]
-        elapsed = (datetime.now() - lock_start).total_seconds()
-        
-        if elapsed > self.lock_timeout_seconds:
-            logger.warning(
-                f"Pump {pump_id} ({pump.name}) lock timeout after {elapsed:.1f}s, "
-                f"forcing unlock"
-            )
-            
-            # Force unlock the pump
-            try:
-                await self.ha_client.turn_off(pump.lock_entity)
-                logger.info(f"Forced unlock of pump {pump_id} ({pump.name})")
-            except HomeAssistantAPIError as e:
-                logger.error(f"Failed to force unlock pump {pump_id}: {str(e)}")
-            
-            # Clear active job and lock time
-            if pump_id in self.active_jobs:
-                job = self.active_jobs[pump_id]
-                logger.warning(
-                    f"Clearing timed-out job for zone {job.zone_id} ({job.zone_name}) "
-                    f"on pump {pump_id}"
-                )
-                del self.active_jobs[pump_id]
-            
-            if pump_id in self.lock_start_times:
-                del self.lock_start_times[pump_id]
-
-    async def _execute_job(self, pump: Pump, job: ExecutionJob):
-        """
-        Execute an irrigation job.
-        
-        This function implements the complete job execution sequence:
-        1. Lock the pump
-        2. Turn on the zone switch
-        3. Wait for the specified duration
-        4. Turn off the zone switch
-        5. Unlock the pump
-        
-        Error handling ensures that switches are turned off and pumps are
-        unlocked even if failures occur during execution.
-        
-        Args:
-            pump: Pump object that controls this zone
+            pump: PumpV2 model instance
             job: ExecutionJob to execute
         """
-        pump_id = pump.id
-        
+        start_time = datetime.utcnow()
         logger.info(
-            f"Starting job execution: zone {job.zone_id} ({job.zone_name}) "
-            f"on pump {pump_id} ({pump.name}), duration={job.duration_seconds}s"
+            f"[EXECUTION START] Pump: {pump.id} ({pump.name}), "
+            f"Zone: {job.zone_name} (ID: {job.zone_id}), "
+            f"Duration: {job.duration_seconds}s, "
+            f"Scheduled: {job.scheduled_time}"
         )
         
-        # Mark job as active
-        self.active_jobs[pump_id] = job
-        self.lock_start_times[pump_id] = datetime.now()
+        # Get system settings for delays
+        db = SessionLocal()
+        try:
+            settings = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
+            if not settings:
+                logger.error("System settings not found, using default delays")
+                pump_startup_delay = 5
+                zone_switch_delay = 2
+            else:
+                pump_startup_delay = settings.pump_startup_delay_seconds
+                zone_switch_delay = settings.zone_switch_delay_seconds
+                logger.debug(
+                    f"Using system settings: pump_delay={pump_startup_delay}s, "
+                    f"zone_delay={zone_switch_delay}s"
+                )
+        except Exception as e:
+            logger.error(f"Error loading system settings: {e}. Using defaults.", exc_info=True)
+            pump_startup_delay = 5
+            zone_switch_delay = 2
+        finally:
+            db.close()
         
-        switch_turned_on = False
+        pump_lock_on = False
+        zone_switch_on = False
         
         try:
-            # Step 1: Lock the pump
+            # Step 1: Turn on pump lock
+            logger.info(f"[STEP 1/7] Turning on pump lock: {pump.lock_entity}")
             try:
                 await self.ha_client.turn_on(pump.lock_entity)
-                logger.debug(f"Locked pump {pump_id} ({pump.name})")
-            except HomeAssistantAPIError as e:
-                logger.error(f"Failed to lock pump {pump_id}: {str(e)}")
+                pump_lock_on = True
+                logger.info(f"Pump lock activated: {pump.lock_entity}")
+            except Exception as e:
+                logger.error(f"Failed to turn on pump lock {pump.lock_entity}: {e}", exc_info=True)
                 raise
             
-            # Step 2: Turn on the zone switch
+            # Step 2: Wait for pump startup delay
+            logger.info(f"[STEP 2/7] Waiting {pump_startup_delay}s for pump startup")
+            await asyncio.sleep(pump_startup_delay)
+            
+            # Step 3: Turn on zone switch
+            logger.info(f"[STEP 3/7] Turning on zone switch: {job.switch_entity}")
             try:
                 await self.ha_client.turn_on(job.switch_entity)
-                switch_turned_on = True
-                logger.info(
-                    f"Turned on switch {job.switch_entity} for zone {job.zone_id} "
-                    f"({job.zone_name})"
-                )
-            except HomeAssistantAPIError as e:
-                logger.error(
-                    f"Failed to turn on switch {job.switch_entity} for zone "
-                    f"{job.zone_id}: {str(e)}"
-                )
+                zone_switch_on = True
+                logger.info(f"Zone switch activated: {job.switch_entity}")
+            except Exception as e:
+                logger.error(f"Failed to turn on zone switch {job.switch_entity}: {e}", exc_info=True)
                 raise
             
-            # Step 3: Wait for the specified duration
-            logger.debug(f"Waiting {job.duration_seconds}s for zone {job.zone_id}")
+            # Step 4: Wait for job duration
+            logger.info(f"[STEP 4/7] Running zone '{job.zone_name}' for {job.duration_seconds}s")
             await asyncio.sleep(job.duration_seconds)
             
-            # Step 4: Turn off the zone switch
+            # Step 5: Turn off zone switch
+            logger.info(f"[STEP 5/7] Turning off zone switch: {job.switch_entity}")
             try:
                 await self.ha_client.turn_off(job.switch_entity)
-                logger.info(
-                    f"Turned off switch {job.switch_entity} for zone {job.zone_id} "
-                    f"({job.zone_name})"
-                )
-            except HomeAssistantAPIError as e:
-                logger.error(
-                    f"Failed to turn off switch {job.switch_entity} for zone "
-                    f"{job.zone_id}: {str(e)}"
-                )
-                # Continue to unlock pump even if switch turn-off fails
+                zone_switch_on = False
+                logger.info(f"Zone switch deactivated: {job.switch_entity}")
+            except Exception as e:
+                logger.error(f"Failed to turn off zone switch {job.switch_entity}: {e}", exc_info=True)
+                # Continue to try turning off pump lock
             
-            # Step 5: Unlock the pump
+            # Step 6: Wait for zone switch delay
+            logger.info(f"[STEP 6/7] Waiting {zone_switch_delay}s for zone switch delay")
+            await asyncio.sleep(zone_switch_delay)
+            
+            # Step 7: Turn off pump lock
+            logger.info(f"[STEP 7/7] Turning off pump lock: {pump.lock_entity}")
             try:
                 await self.ha_client.turn_off(pump.lock_entity)
-                logger.debug(f"Unlocked pump {pump_id} ({pump.name})")
-            except HomeAssistantAPIError as e:
-                logger.error(f"Failed to unlock pump {pump_id}: {str(e)}")
-                # Log but don't raise - timeout mechanism will handle stuck locks
+                pump_lock_on = False
+                logger.info(f"Pump lock deactivated: {pump.lock_entity}")
+            except Exception as e:
+                logger.error(f"Failed to turn off pump lock {pump.lock_entity}: {e}", exc_info=True)
+                # Log but don't raise - job is essentially complete
             
+            end_time = datetime.utcnow()
+            duration = (end_time - start_time).total_seconds()
             logger.info(
-                f"Completed job execution: zone {job.zone_id} ({job.zone_name}) "
-                f"on pump {pump_id} ({pump.name})"
+                f"[EXECUTION SUCCESS] Pump: {pump.id}, Zone: {job.zone_name}, "
+                f"Total time: {duration:.1f}s"
             )
         
+        except asyncio.CancelledError:
+            logger.warning(
+                f"[EXECUTION CANCELLED] Job cancelled for pump {pump.id}, zone {job.zone_name}"
+            )
+            # Perform cleanup
+            await self._cleanup_after_error(
+                pump, job, pump_lock_on, zone_switch_on, zone_switch_delay
+            )
+            raise
+        
         except Exception as e:
-            # Error occurred during execution - attempt cleanup
+            end_time = datetime.utcnow()
+            duration = (end_time - start_time).total_seconds()
             logger.error(
-                f"Error executing job for zone {job.zone_id} ({job.zone_name}): {str(e)}",
+                f"[EXECUTION FAILED] Pump: {pump.id}, Zone: {job.zone_name}, "
+                f"Error: {e}, Time elapsed: {duration:.1f}s",
                 exc_info=True
             )
             
-            # Attempt to turn off switch if it was turned on
-            if switch_turned_on:
-                try:
-                    await self.ha_client.turn_off(job.switch_entity)
-                    logger.info(f"Emergency turn-off of switch {job.switch_entity}")
-                except Exception as cleanup_error:
-                    logger.error(
-                        f"Failed to turn off switch during error cleanup: {str(cleanup_error)}"
-                    )
-            
-            # Attempt to unlock pump
-            try:
-                await self.ha_client.turn_off(pump.lock_entity)
-                logger.info(f"Emergency unlock of pump {pump_id}")
-            except Exception as cleanup_error:
-                logger.error(
-                    f"Failed to unlock pump during error cleanup: {str(cleanup_error)}"
-                )
+            # Attempt cleanup
+            await self._cleanup_after_error(
+                pump, job, pump_lock_on, zone_switch_on, zone_switch_delay
+            )
         
         finally:
-            # Clear active job and lock time
-            if pump_id in self.active_jobs:
-                del self.active_jobs[pump_id]
-            if pump_id in self.lock_start_times:
-                del self.lock_start_times[pump_id]
-            
-            logger.debug(f"Cleared active job for pump {pump_id}")
+            # Step 8: Mark job as complete (remove from executing)
+            self.executing[pump.id] = None
+            logger.info(f"Job execution finished for pump {pump.id}, zone {job.zone_name}")
     
-    def get_pump_status(self, pump_id: int) -> Dict[str, Any]:
+    async def _cleanup_after_error(
+        self,
+        pump: PumpV2,
+        job: ExecutionJob,
+        pump_lock_on: bool,
+        zone_switch_on: bool,
+        zone_switch_delay: int
+    ) -> None:
         """
-        Get the current status of a pump with 1-second caching.
+        Cleanup after a job execution error.
         
-        Returns information about whether the pump is idle, running a zone,
-        or has jobs queued. Results are cached for 1 second to improve
-        performance when multiple requests are made in quick succession.
+        Attempts to turn off zone switch and pump lock to prevent
+        equipment from being left in an active state.
         
         Args:
-            pump_id: ID of the pump to check
-        
-        Returns:
-            Dictionary with status information:
-            - status: 'idle', 'running', or 'queued'
-            - active_zone: Name of active zone if running, None otherwise
-            - queue_length: Number of jobs in queue
+            pump: PumpV2 model instance
+            job: ExecutionJob that failed
+            pump_lock_on: Whether pump lock was turned on
+            zone_switch_on: Whether zone switch was turned on
+            zone_switch_delay: Delay to wait after turning off zone
         """
-        # Check if we have a valid cached status
-        now = datetime.now()
-        if pump_id in self._status_cache and pump_id in self._status_cache_time:
-            cache_age = (now - self._status_cache_time[pump_id]).total_seconds()
-            if cache_age < self._cache_ttl_seconds:
-                logger.debug(f"Returning cached status for pump {pump_id} (age: {cache_age:.2f}s)")
-                return self._status_cache[pump_id]
+        logger.info(
+            f"[CLEANUP] Starting cleanup for pump {pump.id}, zone {job.zone_name}. "
+            f"pump_lock_on={pump_lock_on}, zone_switch_on={zone_switch_on}"
+        )
         
-        # Calculate fresh status
-        status = {
-            'status': 'idle',
-            'active_zone': None,
-            'queue_length': 0
-        }
+        cleanup_errors = []
         
-        # Check if pump has an active job
-        if pump_id in self.active_jobs:
-            job = self.active_jobs[pump_id]
-            status['status'] = 'running'
-            status['active_zone'] = job.zone_name
+        # Turn off zone switch if it was turned on
+        if zone_switch_on:
+            try:
+                logger.info(f"[CLEANUP] Turning off zone switch: {job.switch_entity}")
+                await self.ha_client.turn_off(job.switch_entity)
+                logger.info(f"[CLEANUP] Zone switch turned off successfully")
+                await asyncio.sleep(zone_switch_delay)
+            except Exception as e:
+                error_msg = f"Failed to turn off zone switch {job.switch_entity}: {e}"
+                logger.error(f"[CLEANUP] {error_msg}")
+                cleanup_errors.append(error_msg)
         
-        # Check queue length
-        if pump_id in self.pump_queues:
-            queue = self.pump_queues[pump_id]
-            queue_length = queue.qsize()
-            status['queue_length'] = queue_length
-            
-            # If not running but has queued jobs, status is 'queued'
-            if status['status'] == 'idle' and queue_length > 0:
-                status['status'] = 'queued'
+        # Turn off pump lock if it was turned on
+        if pump_lock_on:
+            try:
+                logger.info(f"[CLEANUP] Turning off pump lock: {pump.lock_entity}")
+                await self.ha_client.turn_off(pump.lock_entity)
+                logger.info(f"[CLEANUP] Pump lock turned off successfully")
+            except Exception as e:
+                error_msg = f"Failed to turn off pump lock {pump.lock_entity}: {e}"
+                logger.error(f"[CLEANUP] {error_msg}")
+                cleanup_errors.append(error_msg)
         
-        # Cache the status
-        self._status_cache[pump_id] = status
-        self._status_cache_time[pump_id] = now
-        
-        logger.debug(f"Calculated fresh status for pump {pump_id}: {status['status']}")
-        return status
+        if cleanup_errors:
+            logger.error(
+                f"[CLEANUP] Cleanup completed with {len(cleanup_errors)} error(s). "
+                f"Manual intervention may be required."
+            )
+        else:
+            logger.info(f"[CLEANUP] Cleanup completed successfully")
+
+
+# Singleton instance
+_queue_processor_instance: Optional[PumpQueueProcessor] = None
+
+
+def get_queue_processor() -> PumpQueueProcessor:
+    """
+    Get the singleton queue processor instance.
+    
+    Returns:
+        PumpQueueProcessor instance
+    """
+    global _queue_processor_instance
+    if _queue_processor_instance is None:
+        _queue_processor_instance = PumpQueueProcessor()
+    return _queue_processor_instance

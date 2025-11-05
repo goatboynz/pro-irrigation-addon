@@ -28,5 +28,5 @@ jobs:
         with:
           args: |
             --all \
-            --target . \
+            --target /data \
             --docker-hub-check

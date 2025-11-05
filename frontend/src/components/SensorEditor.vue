@@ -2,19 +2,19 @@
   <div v-if="show" class="modal-overlay" @click.self="handleCancel">
     <div class="modal-content">
       <div class="modal-header">
-        <h2>{{ isEditMode ? 'Edit Zone' : 'Create Zone' }}</h2>
+        <h2>{{ isEditMode ? 'Edit Sensor' : 'Add Sensor' }}</h2>
         <button @click="handleCancel" class="btn-close">&times;</button>
       </div>
       
       <div class="modal-body">
         <form @submit.prevent="handleSubmit">
           <div class="form-group">
-            <label for="zoneName">Zone Name *</label>
+            <label for="displayName">Display Name *</label>
             <input 
-              id="zoneName"
-              v-model="formData.name" 
+              id="displayName"
+              v-model="formData.display_name" 
               type="text" 
-              placeholder="e.g., Front Left"
+              placeholder="e.g., Soil Moisture - Plant 1"
               required
               class="form-input"
               :disabled="saving"
@@ -23,13 +23,59 @@
 
           <div class="form-group">
             <EntitySelector 
-              v-model="formData.switch_entity"
-              label="Switch Entity *"
-              placeholder="Select zone switch entity"
-              :filter="filterSwitchEntities"
+              v-model="formData.sensor_entity"
+              label="Sensor Entity *"
+              placeholder="Select sensor entity"
+              :filter="filterSensorEntities"
               :disabled="saving"
             />
-            <p class="field-hint">Home Assistant entity that controls the zone valve (e.g., switch.zone_1)</p>
+            <p class="field-hint">Home Assistant sensor entity (e.g., sensor.soil_moisture_1)</p>
+          </div>
+
+          <div class="form-group">
+            <label for="sensorType">Sensor Type *</label>
+            <select 
+              id="sensorType"
+              v-model="formData.sensor_type"
+              required
+              class="form-input"
+              :disabled="saving"
+            >
+              <option value="">Select sensor type...</option>
+              <option value="soil_rh">Soil Moisture (RH)</option>
+              <option value="ec">Electrical Conductivity (EC)</option>
+              <option value="temperature">Temperature</option>
+              <option value="humidity">Humidity</option>
+              <option value="light">Light</option>
+              <option value="ph">pH</option>
+              <option value="other">Other</option>
+            </select>
+            <p class="field-hint">Type of environmental sensor</p>
+          </div>
+
+          <div class="form-group">
+            <label for="unit">Unit (Optional)</label>
+            <input 
+              id="unit"
+              v-model="formData.unit" 
+              type="text" 
+              placeholder="e.g., %, °C, lux"
+              class="form-input"
+              :disabled="saving"
+            />
+            <p class="field-hint">Unit of measurement (leave empty to use sensor's default)</p>
+          </div>
+
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input 
+                type="checkbox" 
+                v-model="formData.enabled"
+                :disabled="saving"
+              />
+              <span>Enable sensor</span>
+            </label>
+            <p class="field-hint">When enabled, sensor data will be available for monitoring</p>
           </div>
 
           <div v-if="error" class="error-message">
@@ -50,7 +96,7 @@
               class="btn-primary"
               :disabled="saving || !isFormValid"
             >
-              {{ saving ? 'Saving...' : (isEditMode ? 'Update Zone' : 'Create Zone') }}
+              {{ saving ? 'Saving...' : (isEditMode ? 'Update Sensor' : 'Add Sensor') }}
             </button>
           </div>
         </form>
@@ -69,11 +115,11 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
-  zone: {
+  sensor: {
     type: Object,
     default: null
   },
-  pumpId: {
+  roomId: {
     type: Number,
     required: true
   }
@@ -82,33 +128,40 @@ const props = defineProps({
 const emit = defineEmits(['close', 'saved'])
 
 const formData = ref({
-  name: '',
-  switch_entity: ''
+  display_name: '',
+  sensor_entity: '',
+  sensor_type: '',
+  unit: '',
+  enabled: true
 })
 
 const saving = ref(false)
 const error = ref(null)
 
-const isEditMode = computed(() => props.zone !== null)
+const isEditMode = computed(() => props.sensor !== null)
 
 const isFormValid = computed(() => {
-  return formData.value.name.trim().length > 0 && 
-         formData.value.switch_entity.trim().length > 0
+  return formData.value.display_name.trim().length > 0 && 
+         formData.value.sensor_entity.trim().length > 0 &&
+         formData.value.sensor_type.trim().length > 0
 })
 
-// Filter for switch entities
-function filterSwitchEntities(entity) {
+// Filter for sensor entities
+function filterSensorEntities(entity) {
   const entityId = entity.entity_id.toLowerCase()
-  return entityId.startsWith('switch.') || 
-         entityId.startsWith('input_boolean.')
+  return entityId.startsWith('sensor.') || 
+         entityId.startsWith('binary_sensor.')
 }
 
-// Watch for zone prop changes to populate form
-watch(() => props.zone, (newZone) => {
-  if (newZone) {
+// Watch for sensor prop changes to populate form
+watch(() => props.sensor, (newSensor) => {
+  if (newSensor) {
     formData.value = {
-      name: newZone.name || '',
-      switch_entity: newZone.switch_entity || ''
+      display_name: newSensor.display_name || '',
+      sensor_entity: newSensor.sensor_entity || '',
+      sensor_type: newSensor.sensor_type || '',
+      unit: newSensor.unit || '',
+      enabled: newSensor.enabled !== undefined ? newSensor.enabled : true
     }
   } else {
     resetForm()
@@ -117,7 +170,7 @@ watch(() => props.zone, (newZone) => {
 
 // Watch for show prop to reset form when opening
 watch(() => props.show, (newShow) => {
-  if (newShow && !props.zone) {
+  if (newShow && !props.sensor) {
     resetForm()
   }
   error.value = null
@@ -125,8 +178,11 @@ watch(() => props.show, (newShow) => {
 
 function resetForm() {
   formData.value = {
-    name: '',
-    switch_entity: ''
+    display_name: '',
+    sensor_entity: '',
+    sensor_type: '',
+    unit: '',
+    enabled: true
   }
 }
 
@@ -138,21 +194,24 @@ async function handleSubmit() {
 
   try {
     const submitData = {
-      name: formData.value.name.trim(),
-      switch_entity: formData.value.switch_entity.trim()
+      display_name: formData.value.display_name.trim(),
+      sensor_entity: formData.value.sensor_entity.trim(),
+      sensor_type: formData.value.sensor_type.trim(),
+      unit: formData.value.unit.trim() || null,
+      enabled: formData.value.enabled
     }
 
     if (isEditMode.value) {
-      await api.updateZone(props.zone.id, submitData)
+      await api.updateSensor(props.sensor.id, submitData)
     } else {
-      await api.createZone(props.pumpId, submitData)
+      await api.createSensor(props.roomId, submitData)
     }
 
     emit('saved')
     emit('close')
   } catch (err) {
-    error.value = err.message || 'Failed to save zone'
-    console.error('Error saving zone:', err)
+    error.value = err.message || 'Failed to save sensor'
+    console.error('Error saving sensor:', err)
   } finally {
     saving.value = false
   }
@@ -253,6 +312,33 @@ function handleCancel() {
 
 .form-input:disabled {
   background-color: #f5f5f5;
+  cursor: not-allowed;
+}
+
+select.form-input {
+  cursor: pointer;
+}
+
+select.form-input:disabled {
+  cursor: not-allowed;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-weight: 500;
+  color: #2c3e50;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 1.25rem;
+  height: 1.25rem;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"]:disabled {
   cursor: not-allowed;
 }
 

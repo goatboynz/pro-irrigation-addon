@@ -1,116 +1,145 @@
 <template>
   <div class="settings">
-    <div class="container">
-      <div class="header">
-        <h1>Global Settings</h1>
-        <p class="subtitle">Configure system-wide parameters for Auto Mode zones</p>
-      </div>
+    <div class="settings-header">
+      <h1>System Settings</h1>
+    </div>
 
-      <div v-if="loading" class="loading-container">
-        <div class="spinner"></div>
-        <p>Loading settings...</p>
-      </div>
+    <div v-if="loading" class="loading">
+      Loading settings...
+    </div>
 
-      <form v-else @submit.prevent="handleSubmit" class="settings-form">
-        <!-- Lighting Schedule Section -->
-        <div class="form-section">
-          <h2 class="section-title">Lighting Schedule</h2>
-          <p class="section-description">
-            Define when lights turn on and off. These times are used to calculate Auto Mode irrigation schedules.
-          </p>
+    <div v-else-if="error" class="error-message">
+      <p>Error loading settings: {{ error }}</p>
+      <button @click="loadSettings" class="btn-secondary">Retry</button>
+    </div>
 
-          <EntitySelector
-            v-model="formData.lights_on_entity"
-            entity-type="input_datetime"
-            label="Lights On Time"
-            placeholder="Select lights on time entity..."
-            hint="input_datetime entity that defines when lights turn on"
-          />
+    <div v-else class="settings-content">
+      <!-- Settings Form -->
+      <div class="settings-card">
+        <h2>Timing Configuration</h2>
+        <p class="card-description">Configure system timing parameters for pump and zone operations.</p>
 
-          <EntitySelector
-            v-model="formData.lights_off_entity"
-            entity-type="input_datetime"
-            label="Lights Off Time"
-            placeholder="Select lights off time entity..."
-            hint="input_datetime entity that defines when lights turn off"
-          />
-        </div>
-
-        <!-- P1 Timing Section -->
-        <div class="form-section">
-          <h2 class="section-title">P1 Event Timing</h2>
-          <p class="section-description">
-            P1 is the first irrigation event of the day, scheduled relative to lights-on time.
-          </p>
-
-          <EntitySelector
-            v-model="formData.p1_delay_entity"
-            entity-type="input_number"
-            label="P1 Start Delay"
-            placeholder="Select P1 delay entity..."
-            hint="input_number entity (in minutes) to add to lights-on time for P1 start"
-          />
-        </div>
-
-        <!-- P2 Timing Section -->
-        <div class="form-section">
-          <h2 class="section-title">P2 Event Timing</h2>
-          <p class="section-description">
-            P2 events are distributed throughout the day between P2 start and P2 end times.
-          </p>
-
-          <EntitySelector
-            v-model="formData.p2_delay_entity"
-            entity-type="input_number"
-            label="P2 Start Delay"
-            placeholder="Select P2 start delay entity..."
-            hint="input_number entity (in minutes) to add to lights-on time for P2 start"
-          />
-
-          <EntitySelector
-            v-model="formData.p2_buffer_entity"
-            entity-type="input_number"
-            label="P2 End Buffer"
-            placeholder="Select P2 end buffer entity..."
-            hint="input_number entity (in minutes) to subtract from lights-off time for P2 end"
-          />
-        </div>
-
-        <!-- Feed Notes Section -->
-        <div class="form-section">
-          <h2 class="section-title">Feed Schedule Notes</h2>
-          <p class="section-description">
-            Optional notes about your feeding schedule for reference.
-          </p>
+        <form @submit.prevent="saveSettings" class="settings-form">
+          <div class="form-group">
+            <label for="pump-startup-delay">Pump Startup Delay (seconds)</label>
+            <input
+              id="pump-startup-delay"
+              v-model.number="formData.pump_startup_delay_seconds"
+              type="number"
+              min="0"
+              step="1"
+              required
+              class="form-input"
+            />
+            <p class="field-hint">Delay before opening zone after pump starts</p>
+          </div>
 
           <div class="form-group">
-            <label for="feed-notes" class="form-label">Notes</label>
-            <textarea
-              id="feed-notes"
-              v-model="formData.feed_notes"
-              class="form-textarea"
-              rows="6"
-              placeholder="Enter feed schedule notes, mixing ratios, or other relevant information..."
-            ></textarea>
+            <label for="zone-switch-delay">Zone Switch Delay (seconds)</label>
+            <input
+              id="zone-switch-delay"
+              v-model.number="formData.zone_switch_delay_seconds"
+              type="number"
+              min="0"
+              step="1"
+              required
+              class="form-input"
+            />
+            <p class="field-hint">Delay between closing one zone and opening next</p>
           </div>
-        </div>
 
-        <!-- Form Actions -->
-        <div class="form-actions">
+          <div class="form-group">
+            <label for="scheduler-interval">Scheduler Interval (seconds)</label>
+            <input
+              id="scheduler-interval"
+              v-model.number="formData.scheduler_interval_seconds"
+              type="number"
+              min="1"
+              step="1"
+              required
+              class="form-input"
+            />
+            <p class="field-hint">How often scheduler checks for events (minimum 1 second)</p>
+          </div>
+
+          <div class="form-actions">
+            <button 
+              type="submit" 
+              class="btn-primary"
+              :disabled="saving"
+            >
+              {{ saving ? 'Saving...' : 'Save Settings' }}
+            </button>
+            <button 
+              type="button" 
+              @click="resetForm" 
+              class="btn-secondary"
+              :disabled="saving"
+            >
+              Reset
+            </button>
+          </div>
+
+          <div v-if="saveSuccess" class="success-message">
+            Settings saved successfully!
+          </div>
+          <div v-if="saveError" class="error-message">
+            Error saving settings: {{ saveError }}
+          </div>
+        </form>
+      </div>
+
+      <!-- System Reset Section -->
+      <div class="settings-card danger-zone">
+        <h2>Danger Zone</h2>
+        <p class="card-description">Irreversible actions that will affect your system data.</p>
+
+        <div class="danger-action">
+          <div class="danger-info">
+            <h3>Delete All Data</h3>
+            <p>This will permanently delete all rooms, pumps, zones, water events, and sensors. System settings will be preserved.</p>
+          </div>
           <button 
-            type="submit" 
-            class="btn btn-primary"
-            :disabled="saving"
+            @click="showResetConfirm = true" 
+            class="btn-danger"
+            :disabled="resetting"
           >
-            <span v-if="saving">Saving...</span>
-            <span v-else>Save Settings</span>
+            {{ resetting ? 'Deleting...' : 'Delete All Data' }}
           </button>
         </div>
-      </form>
 
-      <!-- Toast Notification -->
-      <div v-if="notification.show" :class="['toast', notification.type]">
-        {{ notification.message }}
+        <div v-if="resetSuccess" class="success-message">
+          All data deleted successfully!
+        </div>
+        <div v-if="resetError" class="error-message">
+          Error deleting data: {{ resetError }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirmation Dialog -->
+    <div v-if="showResetConfirm" class="modal-overlay" @click="showResetConfirm = false">
+      <div class="modal-content" @click.stop>
+        <h3>Confirm Data Deletion</h3>
+        <p>Are you sure you want to delete all data? This action cannot be undone.</p>
+        <p class="warning-text">This will delete:</p>
+        <ul class="deletion-list">
+          <li>All rooms</li>
+          <li>All pumps</li>
+          <li>All zones</li>
+          <li>All water events</li>
+          <li>All sensors</li>
+        </ul>
+        <p class="warning-text">System settings will be preserved.</p>
+        
+        <div class="modal-actions">
+          <button @click="confirmReset" class="btn-danger">
+            Yes, Delete All Data
+          </button>
+          <button @click="showResetConfirm = false" class="btn-secondary">
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -118,300 +147,368 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import EntitySelector from '../components/EntitySelector.vue'
-import api from '../services/api'
+import { settingsApi, systemApi } from '../services/api'
 
-// State
-const loading = ref(true)
+const loading = ref(false)
+const error = ref(null)
 const saving = ref(false)
-const notification = ref({
-  show: false,
-  message: '',
-  type: 'success' // 'success' or 'error'
-})
+const saveSuccess = ref(false)
+const saveError = ref(null)
+const resetting = ref(false)
+const resetSuccess = ref(false)
+const resetError = ref(null)
+const showResetConfirm = ref(false)
 
+const originalSettings = ref(null)
 const formData = ref({
-  lights_on_entity: '',
-  lights_off_entity: '',
-  p1_delay_entity: '',
-  p2_delay_entity: '',
-  p2_buffer_entity: '',
-  feed_notes: ''
+  pump_startup_delay_seconds: 5,
+  zone_switch_delay_seconds: 2,
+  scheduler_interval_seconds: 60
 })
 
-// Load settings on mount
-onMounted(async () => {
-  await loadSettings()
-})
-
-// Methods
-const loadSettings = async () => {
+async function loadSettings() {
+  loading.value = true
+  error.value = null
   try {
-    loading.value = true
-    const settings = await api.getGlobalSettings()
-    
-    // Populate form with loaded settings
+    const response = await settingsApi.getSettings()
+    originalSettings.value = response.data
     formData.value = {
-      lights_on_entity: settings.lights_on_entity || '',
-      lights_off_entity: settings.lights_off_entity || '',
-      p1_delay_entity: settings.p1_delay_entity || '',
-      p2_delay_entity: settings.p2_delay_entity || '',
-      p2_buffer_entity: settings.p2_buffer_entity || '',
-      feed_notes: settings.feed_notes || ''
+      pump_startup_delay_seconds: response.data.pump_startup_delay_seconds,
+      zone_switch_delay_seconds: response.data.zone_switch_delay_seconds,
+      scheduler_interval_seconds: response.data.scheduler_interval_seconds
     }
-  } catch (error) {
-    console.error('Failed to load settings:', error)
-    showNotification('Failed to load settings', 'error')
+  } catch (err) {
+    error.value = err.message
   } finally {
     loading.value = false
   }
 }
 
-const handleSubmit = async () => {
+async function saveSettings() {
+  saving.value = true
+  saveSuccess.value = false
+  saveError.value = null
+  
   try {
-    saving.value = true
+    const response = await settingsApi.updateSettings(formData.value)
+    originalSettings.value = response.data
+    saveSuccess.value = true
     
-    // Prepare data for submission (convert empty strings to null)
-    const dataToSubmit = {
-      lights_on_entity: formData.value.lights_on_entity || null,
-      lights_off_entity: formData.value.lights_off_entity || null,
-      p1_delay_entity: formData.value.p1_delay_entity || null,
-      p2_delay_entity: formData.value.p2_delay_entity || null,
-      p2_buffer_entity: formData.value.p2_buffer_entity || null,
-      feed_notes: formData.value.feed_notes || null
-    }
-    
-    await api.updateGlobalSettings(dataToSubmit)
-    showNotification('Settings saved successfully', 'success')
-  } catch (error) {
-    console.error('Failed to save settings:', error)
-    showNotification('Failed to save settings', 'error')
+    // Clear success message after 3 seconds
+    setTimeout(() => {
+      saveSuccess.value = false
+    }, 3000)
+  } catch (err) {
+    saveError.value = err.message
   } finally {
     saving.value = false
   }
 }
 
-const showNotification = (message, type = 'success') => {
-  notification.value = {
-    show: true,
-    message,
-    type
+function resetForm() {
+  if (originalSettings.value) {
+    formData.value = {
+      pump_startup_delay_seconds: originalSettings.value.pump_startup_delay_seconds,
+      zone_switch_delay_seconds: originalSettings.value.zone_switch_delay_seconds,
+      scheduler_interval_seconds: originalSettings.value.scheduler_interval_seconds
+    }
   }
-  
-  // Auto-hide after 3 seconds
-  setTimeout(() => {
-    notification.value.show = false
-  }, 3000)
+  saveSuccess.value = false
+  saveError.value = null
 }
+
+async function confirmReset() {
+  showResetConfirm.value = false
+  resetting.value = true
+  resetSuccess.value = false
+  resetError.value = null
+  
+  try {
+    await systemApi.reset()
+    resetSuccess.value = true
+    
+    // Clear success message after 5 seconds
+    setTimeout(() => {
+      resetSuccess.value = false
+    }, 5000)
+  } catch (err) {
+    resetError.value = err.message
+  } finally {
+    resetting.value = false
+  }
+}
+
+onMounted(() => {
+  loadSettings()
+})
 </script>
 
 <style scoped>
 .settings {
-  padding: 20px;
-  min-height: 100vh;
-  background-color: var(--primary-background-color);
-}
-
-.container {
+  padding: 1rem;
   max-width: 800px;
   margin: 0 auto;
 }
 
-.header {
-  margin-bottom: 32px;
+.settings-header {
+  margin-bottom: 2rem;
 }
 
-h1 {
-  margin: 0 0 8px 0;
-  color: var(--text-primary-color);
-  font-size: 28px;
-  font-weight: 500;
-}
-
-.subtitle {
+.settings-header h1 {
   margin: 0;
-  color: var(--text-secondary-color);
-  font-size: 14px;
+  font-size: 2rem;
+  color: #2c3e50;
 }
 
-.loading-container {
+.loading,
+.error-message {
+  text-align: center;
+  padding: 3rem 1rem;
+}
+
+.loading {
+  color: #7f8c8d;
+}
+
+.error-message {
+  color: #e74c3c;
+}
+
+.error-message button {
+  margin-top: 1rem;
+}
+
+.settings-content {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  color: var(--text-secondary-color);
+  gap: 2rem;
 }
 
-.spinner {
-  border: 3px solid var(--divider-color);
-  border-top: 3px solid var(--primary-color);
-  border-radius: 50%;
-  width: 40px;
-  height: 40px;
-  animation: spin 1s linear infinite;
-  margin-bottom: 16px;
+.settings-card {
+  background: white;
+  border: 1px solid #e1e8ed;
+  border-radius: 8px;
+  padding: 2rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+.settings-card h2 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.5rem;
+  color: #2c3e50;
+}
+
+.card-description {
+  margin: 0 0 1.5rem 0;
+  color: #7f8c8d;
+  font-size: 0.95rem;
 }
 
 .settings-form {
-  background-color: var(--card-background-color);
-  border-radius: 8px;
-  padding: 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-.form-section {
-  margin-bottom: 32px;
-  padding-bottom: 32px;
-  border-bottom: 1px solid var(--divider-color);
-}
-
-.form-section:last-of-type {
-  border-bottom: none;
-  margin-bottom: 24px;
-}
-
-.section-title {
-  margin: 0 0 8px 0;
-  color: var(--text-primary-color);
-  font-size: 18px;
-  font-weight: 500;
-}
-
-.section-description {
-  margin: 0 0 20px 0;
-  color: var(--text-secondary-color);
-  font-size: 14px;
-  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
 .form-group {
-  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
-.form-label {
-  display: block;
-  margin-bottom: 8px;
-  font-weight: 500;
-  color: var(--text-primary-color);
-  font-size: 14px;
+.form-group label {
+  font-weight: 600;
+  color: #2c3e50;
+  font-size: 0.95rem;
 }
 
-.form-textarea {
-  width: 100%;
-  padding: 10px;
-  border: 1px solid var(--divider-color);
-  border-radius: 4px;
-  font-size: 14px;
-  font-family: inherit;
-  background-color: var(--card-background-color);
-  color: var(--text-primary-color);
-  resize: vertical;
-  transition: border-color 0.2s;
+.form-input {
+  padding: 0.75rem;
+  border: 1px solid #dce1e6;
+  border-radius: 6px;
+  font-size: 1rem;
+  transition: border-color 0.3s;
 }
 
-.form-textarea:focus {
+.form-input:focus {
   outline: none;
-  border-color: var(--primary-color);
+  border-color: #3498db;
 }
 
-.form-textarea::placeholder {
-  color: var(--text-secondary-color);
-  opacity: 0.6;
+.field-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #7f8c8d;
 }
 
 .form-actions {
   display: flex;
-  justify-content: flex-end;
-  padding-top: 8px;
-}
-
-.btn {
-  padding: 10px 24px;
-  border: none;
-  border-radius: 4px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-family: inherit;
+  gap: 1rem;
+  margin-top: 1rem;
 }
 
 .btn-primary {
-  background-color: var(--primary-color);
+  padding: 0.75rem 1.5rem;
+  background-color: #3498db;
   color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.3s;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background-color: var(--primary-color);
-  opacity: 0.9;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  background-color: #2980b9;
 }
 
 .btn-primary:disabled {
-  opacity: 0.5;
+  background-color: #95a5a6;
   cursor: not-allowed;
 }
 
-/* Toast Notification */
-.toast {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  padding: 16px 24px;
-  border-radius: 4px;
-  font-size: 14px;
+.btn-secondary {
+  padding: 0.75rem 1.5rem;
+  background-color: #ecf0f1;
+  color: #2c3e50;
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
   font-weight: 500;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  animation: slideIn 0.3s ease-out;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background-color: #bdc3c7;
+}
+
+.btn-secondary:disabled {
+  background-color: #ecf0f1;
+  cursor: not-allowed;
+}
+
+.success-message {
+  padding: 0.75rem;
+  background-color: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+.danger-zone {
+  border-color: #e74c3c;
+}
+
+.danger-action {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2rem;
+}
+
+.danger-info h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.1rem;
+  color: #2c3e50;
+}
+
+.danger-info p {
+  margin: 0;
+  color: #7f8c8d;
+  font-size: 0.9rem;
+}
+
+.btn-danger {
+  padding: 0.75rem 1.5rem;
+  background-color: #e74c3c;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.3s;
+  white-space: nowrap;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: #c0392b;
+}
+
+.btn-danger:disabled {
+  background-color: #95a5a6;
+  cursor: not-allowed;
+}
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   z-index: 1000;
 }
 
-.toast.success {
-  background-color: #4caf50;
-  color: white;
+.modal-content {
+  background: white;
+  border-radius: 8px;
+  padding: 2rem;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-.toast.error {
-  background-color: #f44336;
-  color: white;
+.modal-content h3 {
+  margin: 0 0 1rem 0;
+  font-size: 1.5rem;
+  color: #2c3e50;
 }
 
-@keyframes slideIn {
-  from {
-    transform: translateX(400px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
+.modal-content p {
+  margin: 0 0 1rem 0;
+  color: #2c3e50;
 }
 
-/* Responsive Design */
+.warning-text {
+  color: #e74c3c;
+  font-weight: 600;
+}
+
+.deletion-list {
+  margin: 0.5rem 0 1rem 1.5rem;
+  color: #2c3e50;
+}
+
+.deletion-list li {
+  margin: 0.25rem 0;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.modal-actions button {
+  flex: 1;
+}
+
 @media (max-width: 768px) {
-  .settings {
-    padding: 16px;
+  .danger-action {
+    flex-direction: column;
+    align-items: stretch;
   }
-
-  .settings-form {
-    padding: 16px;
-  }
-
-  h1 {
-    font-size: 24px;
-  }
-
-  .toast {
-    left: 16px;
-    right: 16px;
-    bottom: 16px;
+  
+  .btn-danger {
+    width: 100%;
   }
 }
 </style>

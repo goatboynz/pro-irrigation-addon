@@ -1,230 +1,278 @@
 # GitHub Setup Guide
 
-This guide will help you push the Pro-Irrigation Add-on to GitHub and make it installable in Home Assistant.
+This guide will help you upload your Pro-Irrigation v2 add-on to GitHub and make it installable in Home Assistant.
+
+## Prerequisites
+
+- Git installed on your computer
+- GitHub account
+- Your add-on code ready
 
 ## Step 1: Create GitHub Repository
 
-1. Go to [GitHub](https://github.com) and sign in
-2. Click the **+** icon in the top right corner
-3. Select **New repository**
-4. Fill in the details:
-   - **Repository name**: `pro-irrigation-addon` (or your preferred name)
-   - **Description**: Professional irrigation management system for Home Assistant
-   - **Visibility**: Public (required for Home Assistant add-on store)
-   - **DO NOT** initialize with README, .gitignore, or license (we already have these)
-5. Click **Create repository**
+1. **Go to GitHub**
+   - Navigate to https://github.com
+   - Log in to your account
 
-## Step 2: Push to GitHub
+2. **Create New Repository**
+   - Click the **+** icon in the top right
+   - Select **New repository**
+   - Repository name: `pro-irrigation-addon`
+   - Description: "Room-based irrigation management system for Home Assistant"
+   - Choose **Public** (required for Home Assistant add-on repositories)
+   - Do NOT initialize with README (we already have one)
+   - Click **Create repository**
 
-After creating the repository, GitHub will show you commands. Use these:
+## Step 2: Prepare Your Local Repository
 
-```bash
-# Add the remote repository (replace YOUR_USERNAME with your GitHub username)
-git remote add origin https://github.com/YOUR_USERNAME/pro-irrigation-addon.git
+1. **Open Terminal/Command Prompt**
+   - Navigate to your add-on directory:
+     ```bash
+     cd /path/to/your/addon
+     ```
 
-# Verify the remote was added
-git remote -v
-
-# Push the code and tags
-git push -u origin main
-git push origin v1.0.0
-```
-
-**If you get an error about 'main' not existing**, your default branch might be 'master':
-```bash
-# Rename master to main
-git branch -M main
-
-# Then push
-git push -u origin main
-git push origin v1.0.0
-```
-
-## Step 3: Update Repository URLs
-
-After pushing to GitHub, update these files with your actual GitHub username:
-
-### 1. config.yaml
-```yaml
-url: https://github.com/YOUR_USERNAME/pro-irrigation-addon
-```
-
-### 2. repository.json
-```json
-{
-  "name": "Pro-Irrigation Add-on Repository",
-  "url": "https://github.com/YOUR_USERNAME/pro-irrigation-addon",
-  "maintainer": "Your Name <your.email@example.com>"
-}
-```
-
-### 3. README.md
-Update all instances of:
-- `https://github.com/yourusername/pro-irrigation-addon`
-
-### 4. INSTALLATION.md
-Update the repository URL in the installation instructions.
-
-After updating, commit and push the changes:
-```bash
-git add config.yaml repository.json README.md INSTALLATION.md
-git commit -m "Update repository URLs"
-git push
-```
-
-## Step 4: Add to Home Assistant
-
-Now you can install the add-on in Home Assistant:
-
-### Method 1: Add Repository URL
-
-1. Open Home Assistant
-2. Go to **Settings** → **Add-ons** → **Add-on Store**
-3. Click the three-dot menu (⋮) in the top right corner
-4. Select **Repositories**
-5. Add your repository URL:
+2. **Initialize Git (if not already done)**
+   ```bash
+   git init
    ```
-   https://github.com/YOUR_USERNAME/pro-irrigation-addon
+
+3. **Add All Files**
+   ```bash
+   git add .
    ```
-6. Click **Add**
-7. Close the dialog
-8. Refresh the page
-9. Find "Pro-Irrigation" in the add-on store
-10. Click **Install**
 
-### Method 2: Direct Installation (Advanced)
+4. **Create Initial Commit**
+   ```bash
+   git commit -m "Initial commit - Pro-Irrigation v2.0.0"
+   ```
 
-If you have SSH access to Home Assistant:
+## Step 3: Connect to GitHub
 
-```bash
-# Clone the repository
-cd /addons
-git clone https://github.com/YOUR_USERNAME/pro-irrigation-addon.git
+1. **Add Remote Repository**
+   Replace `YOUR_USERNAME` with your GitHub username:
+   ```bash
+   git remote add origin https://github.com/YOUR_USERNAME/pro-irrigation-addon.git
+   ```
 
-# Restart Home Assistant
-ha core restart
+2. **Verify Remote**
+   ```bash
+   git remote -v
+   ```
 
-# The add-on will appear in the Local add-ons section
-```
+3. **Push to GitHub**
+   ```bash
+   git branch -M main
+   git push -u origin main
+   ```
 
-## Step 5: Verify Installation
+## Step 4: Add Repository Images
 
-1. After installation, go to the add-on page
-2. Click **Start**
-3. Check the **Log** tab for any errors
-4. Enable **Show in sidebar**
-5. Click the sidebar icon to access the interface
+You need to add icon and logo images for your add-on:
 
-## Step 6: Create a Release (Optional but Recommended)
+1. **Create Icon (512x512 PNG)**
+   - Create or find a sprinkler/irrigation icon
+   - Name it `icon.png`
+   - Place it in the root directory
 
-Creating a GitHub release makes it easier for users to track versions:
+2. **Create Logo (256x256 PNG)**
+   - Create or find a logo
+   - Name it `logo.png`
+   - Place it in the root directory
 
-1. Go to your repository on GitHub
-2. Click **Releases** (on the right side)
-3. Click **Create a new release**
-4. Select the tag: **v1.0.0**
-5. Release title: **v1.0.0 - Initial Release**
-6. Description: Copy the content from CHANGELOG.md for version 1.0.0
-7. Click **Publish release**
+3. **Commit and Push Images**
+   ```bash
+   git add icon.png logo.png
+   git commit -m "Add icon and logo"
+   git push
+   ```
 
-## Troubleshooting
+## Step 5: Create a Release (Optional but Recommended)
 
-### Repository Not Appearing in Home Assistant
+Creating releases makes it easier for users to track versions:
 
-- Verify the repository URL is correct
-- Check that the repository is public
-- Ensure `config.yaml` and `repository.json` are in the root directory
-- Try removing and re-adding the repository
+1. **Go to Your Repository on GitHub**
+   - Navigate to your repository page
 
-### Add-on Won't Install
+2. **Create New Release**
+   - Click on **Releases** (right sidebar)
+   - Click **Create a new release**
+   - Tag version: `v2.0.0`
+   - Release title: `Pro-Irrigation v2.0.0 - Initial Release`
+   - Description: Copy from CHANGELOG.md
+   - Click **Publish release**
 
-- Check Home Assistant logs for errors
-- Verify all required files are present (config.yaml, Dockerfile, run.sh)
-- Ensure the repository structure is correct
-- Check that your architecture is supported (aarch64, amd64, armv7)
+## Step 6: Test Installation in Home Assistant
 
-### Build Fails
+1. **Add Repository to Home Assistant**
+   - Open Home Assistant
+   - Go to Settings → Add-ons → Add-on Store
+   - Click ⋮ (three dots) → Repositories
+   - Add: `https://github.com/YOUR_USERNAME/pro-irrigation-addon`
+   - Click Add
 
-- Check the GitHub Actions tab for build errors
-- Verify Dockerfile syntax is correct
-- Ensure all dependencies are listed in requirements.txt
-- Check that frontend builds successfully
+2. **Install the Add-on**
+   - Refresh the Add-on Store
+   - Find "Pro-Irrigation v2"
+   - Click Install
+   - Wait for installation to complete
 
-## Updating the Add-on
+3. **Start and Test**
+   - Start the add-on
+   - Check logs for errors
+   - Enable "Show in sidebar"
+   - Test the interface
+
+## Step 7: Update Repository Information
+
+1. **Update Repository Description**
+   - Go to your repository on GitHub
+   - Click the ⚙️ icon next to "About"
+   - Add description: "Room-based irrigation management system for Home Assistant"
+   - Add website: Your documentation URL (if any)
+   - Add topics: `home-assistant`, `irrigation`, `home-automation`, `addon`
+   - Click "Save changes"
+
+2. **Update README.md**
+   - Make sure the GitHub URLs in README.md point to your repository
+   - Update any placeholder text
+
+## Step 8: Enable GitHub Actions (Optional)
+
+If you want automated builds:
+
+1. **Go to Repository Settings**
+   - Click Settings tab
+   - Click Actions → General
+   - Enable "Allow all actions and reusable workflows"
+   - Click Save
+
+2. **Verify Workflow**
+   - Go to Actions tab
+   - You should see the "Builder" workflow
+   - It will run on every push to main
+
+## Maintenance
+
+### Updating Your Add-on
 
 When you make changes:
 
+1. **Update Version Numbers**
+   - Update `config.yaml` version
+   - Update `frontend/package.json` version
+   - Update `Dockerfile` label
+   - Update `CHANGELOG.md`
+
+2. **Commit Changes**
+   ```bash
+   git add .
+   git commit -m "Version 2.1.0 - Description of changes"
+   git push
+   ```
+
+3. **Create New Release**
+   - Go to GitHub → Releases
+   - Create new release with new version tag
+   - Users will see the update in Home Assistant
+
+### Responding to Issues
+
+1. **Enable Issues**
+   - Go to Settings → Features
+   - Check "Issues"
+
+2. **Monitor Issues**
+   - Check GitHub regularly for user issues
+   - Respond promptly
+   - Close issues when resolved
+
+### Accepting Contributions
+
+1. **Enable Pull Requests**
+   - Already enabled by default
+
+2. **Review Pull Requests**
+   - Check code quality
+   - Test changes
+   - Merge if acceptable
+
+## Troubleshooting
+
+### Push Rejected
+
+If push is rejected:
 ```bash
-# Make your changes
-git add .
-git commit -m "Description of changes"
-
-# Update version in config.yaml and CHANGELOG.md
-# Then create a new tag
-git tag -a v1.0.1 -m "Release version 1.0.1"
-
-# Push changes and tags
+git pull origin main --rebase
 git push
-git push origin v1.0.1
 ```
 
-Users will see the update in Home Assistant and can upgrade.
+### Authentication Failed
 
-## Sharing Your Add-on
+Use a Personal Access Token:
+1. Go to GitHub Settings → Developer settings → Personal access tokens
+2. Generate new token with `repo` scope
+3. Use token as password when pushing
 
-Once your add-on is working:
+### Add-on Not Appearing in Home Assistant
 
-1. **Home Assistant Community Forum**:
-   - Post in the "Share your Projects!" section
-   - Include screenshots and description
-   - Link to your GitHub repository
+1. Verify repository is public
+2. Check repository URL is correct
+3. Verify `config.yaml` and `repository.json` are correct
+4. Try removing and re-adding the repository
 
-2. **Reddit**:
-   - Post to r/homeassistant
-   - Use flair "Project Showcase"
+### Build Failures
 
-3. **GitHub Topics**:
-   - Add topics to your repository: `home-assistant`, `home-assistant-addon`, `irrigation`
+1. Check GitHub Actions logs
+2. Verify Dockerfile syntax
+3. Test build locally:
+   ```bash
+   docker build -t test-addon .
+   ```
 
-4. **Documentation**:
-   - Keep README.md updated
-   - Respond to issues promptly
-   - Accept pull requests from contributors
+## Best Practices
 
-## Security Notes
+1. **Use Semantic Versioning**
+   - MAJOR.MINOR.PATCH (e.g., 2.0.0)
+   - Increment MAJOR for breaking changes
+   - Increment MINOR for new features
+   - Increment PATCH for bug fixes
 
-- Never commit sensitive data (tokens, passwords)
-- Use Home Assistant's Supervisor API for authentication
-- Keep dependencies updated
-- Monitor security advisories for your dependencies
+2. **Write Good Commit Messages**
+   - Use present tense ("Add feature" not "Added feature")
+   - Be descriptive but concise
+   - Reference issues when applicable
 
-## Next Steps
+3. **Keep CHANGELOG Updated**
+   - Document all changes
+   - Organize by version
+   - Include dates
 
-- [ ] Create GitHub repository
-- [ ] Push code to GitHub
-- [ ] Update repository URLs
-- [ ] Test installation in Home Assistant
-- [ ] Create GitHub release
-- [ ] Share with the community
-- [ ] Set up issue tracking
-- [ ] Monitor for user feedback
+4. **Test Before Pushing**
+   - Test locally first
+   - Verify all features work
+   - Check logs for errors
 
-## Support
-
-If you encounter issues:
-- Check GitHub Actions for build logs
-- Review Home Assistant add-on logs
-- Search existing GitHub issues
-- Create a new issue with details
+5. **Respond to Community**
+   - Answer questions promptly
+   - Be friendly and helpful
+   - Thank contributors
 
 ## Resources
 
-- [Home Assistant Add-on Documentation](https://developers.home-assistant.io/docs/add-ons)
-- [Home Assistant Add-on Repository](https://github.com/home-assistant/addons-example)
-- [GitHub Documentation](https://docs.github.com)
+- **Home Assistant Add-on Documentation**: https://developers.home-assistant.io/docs/add-ons
+- **GitHub Docs**: https://docs.github.com
+- **Git Tutorial**: https://git-scm.com/docs/gittutorial
 
----
+## Support
 
-**Current Status**: ✓ Git repository initialized and ready to push
+If you need help with GitHub setup:
+- GitHub Community: https://github.community
+- Home Assistant Community: https://community.home-assistant.io
 
-**Next Action**: Create GitHub repository and push code
+## Next Steps
+
+After setup:
+1. Share your repository with the community
+2. Consider adding to the Home Assistant Community Add-ons
+3. Keep your add-on updated
+4. Engage with users

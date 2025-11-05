@@ -1,7 +1,6 @@
 # Git
 .git
 .gitignore
-.gitattributes
 
 # Documentation
 *.md
@@ -12,60 +11,38 @@ docs/
 .vscode/
 .idea/
 *.swp
-*.swo
-*~
 
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
 .pytest_cache/
-.coverage
-htmlcov/
 *.egg-info/
 
 # Node
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 .npm
-.eslintcache
 
-# Frontend build artifacts (will be copied from builder stage)
+# Frontend build (will be copied from builder)
 frontend/dist/
-frontend/.vite/
 
-# Backend test files
+# Backend tests
 backend/tests/
-backend/.pytest_cache/
 
-# Data directory (will be mounted)
+# Data
 data/
 *.db
 *.db-journal
 
 # Logs
 *.log
-logs/
 
 # OS
 .DS_Store
-Thumbs.db
 
 # Kiro specs
 .kiro/
 
-# CI/CD
-.github/
-.gitlab-ci.yml
-
-# Temporary files
-tmp/
-temp/
-*.tmp
+# Old v1 files (if any remain)
+backend/models/pump.py
+backend/models/zone.py
+backend/models/global_settings.py

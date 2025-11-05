@@ -1,58 +1,26 @@
-import { createRouter, createWebHashHistory } from 'vue-router'
-import PumpsDashboard from '../views/PumpsDashboard.vue'
-import ZoneManager from '../views/ZoneManager.vue'
-import Settings from '../views/Settings.vue'
+import { createRouter, createWebHistory } from 'vue-router'
 
-/**
- * Router configuration for Pro-Irrigation
- * Uses hash mode for compatibility with Home Assistant Ingress
- */
 const routes = [
   {
     path: '/',
-    name: 'dashboard',
-    component: PumpsDashboard,
-    meta: {
-      title: 'Pumps Dashboard'
-    }
+    name: 'Dashboard',
+    component: () => import('../views/Dashboard.vue')
   },
   {
-    path: '/pump/:pumpId/zones',
-    name: 'zone-manager',
-    component: ZoneManager,
-    meta: {
-      title: 'Zone Manager'
-    },
-    props: true
+    path: '/room/:id',
+    name: 'RoomDetail',
+    component: () => import('../views/RoomDetail.vue')
   },
   {
     path: '/settings',
-    name: 'settings',
-    component: Settings,
-    meta: {
-      title: 'Global Settings'
-    }
-  },
-  {
-    // Catch-all redirect to dashboard
-    path: '/:pathMatch(.*)*',
-    redirect: '/'
+    name: 'Settings',
+    component: () => import('../views/Settings.vue')
   }
 ]
 
 const router = createRouter({
-  // Use hash mode for Ingress compatibility
-  history: createWebHashHistory(),
+  history: createWebHistory(),
   routes
-})
-
-// Navigation guard to update page title
-router.beforeEach((to, from, next) => {
-  // Update document title if meta.title is set
-  if (to.meta.title) {
-    document.title = `${to.meta.title} - Pro-Irrigation`
-  }
-  next()
 })
 
 export default router
