@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.0.1] - 2025-11-05
+
+### Fixed
+- Docker build: Install all npm dependencies including dev dependencies for build process
+- Docker build: Explicitly copy package-lock.json for reproducible builds
+
 ## [2.0.0] - 2025-11-05
 
 ### Complete Redesign - Room-Based System

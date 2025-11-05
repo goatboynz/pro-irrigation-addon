@@ -7,7 +7,7 @@ WORKDIR /app/frontend
 
 # Copy package files and install dependencies
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --only=production
+RUN npm ci
 
 # Copy frontend source and build
 COPY frontend/ ./
@@ -19,7 +19,7 @@ RUN npm run build
 FROM python:3.11-slim
 
 # Set labels for Home Assistant add-on
-LABEL io.hass.version="2.0.0" \
+LABEL io.hass.version="2.0.1" \
       io.hass.type="addon" \
       io.hass.arch="aarch64|amd64|armv7"
 
